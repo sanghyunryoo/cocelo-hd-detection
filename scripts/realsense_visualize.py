@@ -230,18 +230,13 @@ class AllRealSenseVisualizer(Node):
             return
         self.get_logger().info(f"Stopping {len(processes)} managed RealSense driver(s).")
         for process in processes.values():
-            self._signal_process_group(process, signal.SIGINT)
+            self._signal_process_group(process, signal.SIGTERM)
         remaining = self._wait_for_processes(processes, self._shutdown_timeout_sec)
-        if remaining:
-            self.get_logger().warn(f"Forcing RealSense driver shutdown with SIGTERM: {', '.join(remaining)}")
-            for key in remaining:
-                self._signal_process_group(processes[key], signal.SIGTERM)
-            remaining = self._wait_for_processes(processes, 1.0)
         if remaining:
             self.get_logger().warn(f"Forcing RealSense driver shutdown with SIGKILL: {', '.join(remaining)}")
             for key in remaining:
                 self._signal_process_group(processes[key], signal.SIGKILL)
-            self._wait_for_processes(processes, 0.5)
+            self._wait_for_processes(processes, 0.1)
         cv2.destroyAllWindows()
 
     def _discover_streams(self) -> None:
@@ -332,15 +327,15 @@ def cleanup_stale_visualizer_drivers() -> None:
             stale_pids.append(pid)
     for pid in stale_pids:
         try:
-            os.killpg(pid, signal.SIGINT)
+            os.killpg(pid, signal.SIGTERM)
         except ProcessLookupError:
             continue
         except OSError:
             try:
-                os.kill(pid, signal.SIGINT)
+                os.kill(pid, signal.SIGTERM)
             except OSError:
                 pass
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + 0.2
     for pid in stale_pids:
         while time.monotonic() < deadline:
             try:
@@ -350,10 +345,10 @@ def cleanup_stale_visualizer_drivers() -> None:
             time.sleep(0.1)
         else:
             try:
-                os.killpg(pid, signal.SIGTERM)
+                os.killpg(pid, signal.SIGKILL)
             except OSError:
                 try:
-                    os.kill(pid, signal.SIGTERM)
+                    os.kill(pid, signal.SIGKILL)
                 except OSError:
                     pass
 
@@ -363,16 +358,13 @@ def install_signal_handlers(node_holder: Sequence[Optional[AllRealSenseVisualize
 
     def _handle_signal(signum: int, _frame) -> None:
         if shutdown_started["value"]:
-            if rclpy.ok():
-                rclpy.shutdown()
-            return
+            os._exit(128 + signum)
         shutdown_started["value"] = True
         node = node_holder[0]
         if node is not None:
             node.get_logger().info(f"Received signal {signum}; releasing RealSense resources.")
             node.close()
-        if rclpy.ok():
-            rclpy.shutdown()
+        os._exit(128 + signum)
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
@@ -385,14 +377,14 @@ def main() -> None:
     parser.add_argument("--domain-id", type=int, default=int(os.environ.get("ROS_DOMAIN_ID", config_domain)))
     parser.add_argument("--no-start-drivers", action="store_true", help="Only visualize already-running ROS camera topics.")
     parser.add_argument("--keep-stale-drivers", action="store_true", help="Do not clean up old visualizer_* RealSense drivers before starting.")
-    parser.add_argument("--shutdown-timeout-sec", type=float, default=3.0, help="Seconds to wait for RealSense launch processes to exit gracefully before forcing shutdown.")
+    parser.add_argument("--shutdown-timeout-sec", type=float, default=0.2, help="Seconds to wait after SIGTERM before forcing RealSense shutdown with SIGKILL.")
     parser.add_argument("--driver-start-interval-sec", type=float, default=2.0, help="Seconds between starting each RealSense driver after the first one.")
     parser.add_argument("--color-profile", default="640,480,30", help="RealSense RGB profile used only by the visualizer, formatted as width,height,fps.")
     arguments = parser.parse_args()
     if not 0 <= arguments.domain_id <= 232:
         parser.error("--domain-id must be in 0..232")
-    if arguments.shutdown_timeout_sec < 1.0:
-        parser.error("--shutdown-timeout-sec must be >= 1.0")
+    if arguments.shutdown_timeout_sec < 0.0:
+        parser.error("--shutdown-timeout-sec must be >= 0.0")
     if arguments.driver_start_interval_sec < 0.5:
         parser.error("--driver-start-interval-sec must be >= 0.5")
     if not re.fullmatch(r"[1-9][0-9]*,[1-9][0-9]*,[1-9][0-9]*", arguments.color_profile):

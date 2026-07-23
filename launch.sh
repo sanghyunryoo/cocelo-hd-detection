@@ -2,6 +2,23 @@
 # Launch the production C++ RGB-D detector.  Override ROS launch arguments after --.
 set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ros_launch_pid=""
+terminate_ros_launch() {
+  local exit_code="${1:-130}"
+  trap - INT TERM
+  if [[ -n "$ros_launch_pid" ]] && kill -0 "$ros_launch_pid" 2>/dev/null; then
+    echo "Stopping ROS launch process group immediately..." >&2
+    kill -TERM -- "-$ros_launch_pid" 2>/dev/null || kill -TERM "$ros_launch_pid" 2>/dev/null || true
+    sleep 0.2
+    if kill -0 "$ros_launch_pid" 2>/dev/null; then
+      kill -KILL -- "-$ros_launch_pid" 2>/dev/null || kill -KILL "$ros_launch_pid" 2>/dev/null || true
+    fi
+    wait "$ros_launch_pid" 2>/dev/null || true
+  fi
+  exit "$exit_code"
+}
+trap 'terminate_ros_launch 130' INT
+trap 'terminate_ros_launch 143' TERM
 if [[ -f "$script_dir/config/yolo_weldline_3d.yaml" ]]; then
   # Source-tree invocation: ./launch.sh
   project_dir="$script_dir"
@@ -47,5 +64,19 @@ set +u
 source "$project_dir/install/setup.bash"
 set -u
 weights="${WEIGHTS:-$project_dir/weights/best.onnx}"
-exec ros2 launch weldline_reflectivity_detector yolo_weldline_3d.launch.xml \
+launch_command=(
+  ros2 launch weldline_reflectivity_detector yolo_weldline_3d.launch.xml
   weights:="$weights" usb_port_id:="$usb_port_id" "$@"
+)
+if command -v setsid >/dev/null 2>&1; then
+  setsid "${launch_command[@]}" &
+else
+  "${launch_command[@]}" &
+fi
+ros_launch_pid="$!"
+set +e
+wait "$ros_launch_pid"
+launch_status="$?"
+set -e
+ros_launch_pid=""
+exit "$launch_status"

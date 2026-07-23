@@ -41,6 +41,8 @@ The scripts use the sourced `ROS_DISTRO`; if none is sourced, they automatically
 WEIGHTS=/opt/models/weldline.onnx ./launch.sh output_frame:=base_link processing_rate_hz:=30.0
 ```
 
+`./build.sh` validates the configured ONNX model with the target machine's OpenCV DNN runtime. This intentionally fails the build when the target, such as Jetson, cannot load the model; a build artifact should not be produced if it would die at startup. Override the model used for validation with `WELDLINE_ONNX_MODEL=/opt/models/weldline.onnx ./build.sh`.
+
 `launch.sh` starts `realsense2_camera/rs_launch.py` with color, depth, and aligned depth enabled. The default `camera_name:=camera` produces the input topics configured in the YAML file. Select a physical camera explicitly when several are connected:
 
 ```bash
@@ -57,7 +59,7 @@ For an externally managed RealSense driver, keep the detector only:
 
 The explicit Python visualizer is separate from the production C++ detector. Run it before `./launch.sh` when you need to decide which physical RealSense should be assigned to `usb_port_id` in `yolo_weldline_3d.yaml`.
 
-It uses `pyrealsense2` to discover every connected camera, starts one RGB-only `realsense2_camera` driver per camera, logs each serial number and USB topology, and overlays the same identifiers on each video tile. The first camera starts immediately, and additional cameras are staggered slightly to avoid transient USB ownership conflicts on Jetson. The visualizer uses a lightweight `640,480,30` RGB profile by default. The image subscribers use ROS sensor-data QoS, matching the RealSense image publishers. Pressing `q`, `Esc`, or `Ctrl+C` stops all temporary drivers together; it gives ROS launch a short grace period, then forces shutdown if a driver hangs.
+It uses `pyrealsense2` to discover every connected camera, starts one RGB-only `realsense2_camera` driver per camera, logs each serial number and USB topology, and overlays the same identifiers on each video tile. The first camera starts immediately, and additional cameras are staggered slightly to avoid transient USB ownership conflicts on Jetson. The visualizer uses a lightweight `640,480,30` RGB profile by default. The image subscribers use ROS sensor-data QoS, matching the RealSense image publishers. Pressing `q`, `Esc`, or `Ctrl+C` terminates all temporary drivers immediately; shutdown favors releasing the terminal over waiting for a graceful RealSense teardown.
 
 ```bash
 source /opt/ros/<distro>/setup.bash

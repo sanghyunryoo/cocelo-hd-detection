@@ -27,8 +27,10 @@ class YoloWeldline3DNode final : public rclcpp::Node
 {
 public:
   explicit YoloWeldline3DNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
+  ~YoloWeldline3DNode() override;
 
 private:
+  struct TensorRtContext;
   struct Detection { cv::Rect box; cv::Point center; cv::Point line_start; cv::Point line_end; float confidence; };
   struct FrameBundle {
     sensor_msgs::msg::Image::ConstSharedPtr color;
@@ -43,6 +45,7 @@ private:
                              const sensor_msgs::msg::CameraInfo::ConstSharedPtr & info);
   void process_latest_frame();
   std::optional<Detection> infer(const cv::Mat & bgr);
+  cv::Mat forward_network(const cv::Mat & input);
   std::optional<geometry_msgs::msg::Point> project_pixel(const cv::Point & pixel, const cv::Mat & depth,
                                                          const sensor_msgs::msg::CameraInfo & info) const;
   std::optional<geometry_msgs::msg::PointStamped> transform_point(const geometry_msgs::msg::Point & point,
@@ -64,7 +67,9 @@ private:
   rclcpp::TimerBase::SharedPtr processing_timer_;
 
   cv::dnn::Net network_;
+  std::unique_ptr<TensorRtContext> tensorrt_;
   mutable std::mutex network_mutex_;
+  std::string inference_backend_;
   int network_width_{640};
   int network_height_{640};
   float confidence_threshold_{0.40F};
