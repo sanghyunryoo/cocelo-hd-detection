@@ -57,14 +57,14 @@ For an externally managed RealSense driver, keep the detector only:
 
 The explicit Python visualizer is separate from the production C++ detector. Run it before `./launch.sh` when you need to decide which physical RealSense should be assigned to `usb_port_id` in `yolo_weldline_3d.yaml`.
 
-It uses `pyrealsense2` to discover every connected camera, starts one RGB-only `realsense2_camera` driver per camera, logs each serial number and USB topology, and overlays the same identifiers on each video tile. Drivers are started sequentially to avoid transient USB ownership conflicts on Jetson. The image subscribers use ROS sensor-data QoS, matching the RealSense image publishers. Pressing `q`, `Esc`, or `Ctrl+C` stops the temporary drivers it started and gives ROS launch time to release the USB interfaces.
+It uses `pyrealsense2` to discover every connected camera, starts one RGB-only `realsense2_camera` driver per camera, logs each serial number and USB topology, and overlays the same identifiers on each video tile. The first camera starts immediately, and additional cameras are staggered slightly to avoid transient USB ownership conflicts on Jetson. The visualizer uses a lightweight `640,480,30` RGB profile by default. The image subscribers use ROS sensor-data QoS, matching the RealSense image publishers. Pressing `q`, `Esc`, or `Ctrl+C` stops the temporary drivers it started and gives ROS launch time to release the USB interfaces.
 
 ```bash
 source /opt/ros/<distro>/setup.bash
 ROS_DOMAIN_ID=20 python3 scripts/realsense_visualize.py
 ```
 
-Use `--no-start-drivers` for read-only observation of already-running camera topics. By default, the script also cleans up stale `visualizer_*` RealSense launch processes left by a previous crash; pass `--keep-stale-drivers` only when you intentionally want to preserve those temporary drivers. If the USB bus is slow to release devices, increase the launch gap with `--driver-start-interval-sec 12`.
+Use `--no-start-drivers` for read-only observation of already-running camera topics. By default, the script also cleans up stale `visualizer_*` RealSense launch processes left by a previous crash; pass `--keep-stale-drivers` only when you intentionally want to preserve those temporary drivers. If the USB bus is slow to release devices, increase the launch gap with `--driver-start-interval-sec 5` or lower the visualizer stream load with `--color-profile 424,240,15`.
 
 If RealSense logs `Failed to load plugin image_transport/raw_pub` or `No plugins found`, install the selected ROS distribution's image transport package before retrying:
 

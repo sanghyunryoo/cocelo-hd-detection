@@ -87,12 +87,19 @@ def enumerate_devices() -> List[RealSenseDevice]:
 
 
 class AllRealSenseVisualizer(Node):
-    def __init__(self, start_drivers: bool, shutdown_timeout_sec: float, driver_start_interval_sec: float) -> None:
+    def __init__(
+        self,
+        start_drivers: bool,
+        shutdown_timeout_sec: float,
+        driver_start_interval_sec: float,
+        color_profile: str,
+    ) -> None:
         super().__init__("realsense_visualizer")
         self._bridge = CvBridge()
         self._start_drivers = start_drivers
         self._shutdown_timeout_sec = shutdown_timeout_sec
         self._driver_start_interval_sec = driver_start_interval_sec
+        self._color_profile = color_profile
         self._closing = False
         self._lock = threading.Lock()
         self._frames: Dict[str, Optional[np.ndarray]] = {}
@@ -107,6 +114,7 @@ class AllRealSenseVisualizer(Node):
         self.create_timer(2.0, self._check_managed_drivers)
         self.create_timer(0.05, self._render)
         self._refresh_devices()
+        self._start_next_pending_driver()
         self._discover_streams()
         self.get_logger().info(
             f"ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID', '0')}; "
@@ -168,7 +176,8 @@ class AllRealSenseVisualizer(Node):
         command = [
             "ros2", "launch", "realsense2_camera", "rs_launch.py",
             f"camera_name:={camera_name}", f"camera_namespace:={camera_name}", f"serial_no:=_{device.serial}",
-            "enable_color:=true", "enable_depth:=false", "align_depth.enable:=false",
+            "enable_color:=true", f"rgb_camera.color_profile:={self._color_profile}",
+            "enable_depth:=false", "align_depth.enable:=false",
         ]
         try:
             process = subprocess.Popen(command, start_new_session=True)
@@ -366,7 +375,8 @@ def main() -> None:
     parser.add_argument("--no-start-drivers", action="store_true", help="Only visualize already-running ROS camera topics.")
     parser.add_argument("--keep-stale-drivers", action="store_true", help="Do not clean up old visualizer_* RealSense drivers before starting.")
     parser.add_argument("--shutdown-timeout-sec", type=float, default=8.0, help="Seconds to wait for each RealSense launch process to exit gracefully.")
-    parser.add_argument("--driver-start-interval-sec", type=float, default=8.0, help="Seconds between starting each RealSense driver.")
+    parser.add_argument("--driver-start-interval-sec", type=float, default=2.0, help="Seconds between starting each RealSense driver after the first one.")
+    parser.add_argument("--color-profile", default="640,480,30", help="RealSense RGB profile used only by the visualizer, formatted as width,height,fps.")
     arguments = parser.parse_args()
     if not 0 <= arguments.domain_id <= 232:
         parser.error("--domain-id must be in 0..232")
@@ -374,6 +384,8 @@ def main() -> None:
         parser.error("--shutdown-timeout-sec must be >= 1.0")
     if arguments.driver_start_interval_sec < 0.5:
         parser.error("--driver-start-interval-sec must be >= 0.5")
+    if not re.fullmatch(r"[1-9][0-9]*,[1-9][0-9]*,[1-9][0-9]*", arguments.color_profile):
+        parser.error("--color-profile must use width,height,fps, for example 640,480,30")
     os.environ["ROS_DOMAIN_ID"] = str(arguments.domain_id)
     if not arguments.keep_stale_drivers:
         cleanup_stale_visualizer_drivers()
@@ -383,6 +395,7 @@ def main() -> None:
         not arguments.no_start_drivers,
         arguments.shutdown_timeout_sec,
         arguments.driver_start_interval_sec,
+        arguments.color_profile,
     )
     node_holder[0] = node
     install_signal_handlers(node_holder)
