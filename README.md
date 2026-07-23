@@ -21,11 +21,12 @@ Coordinates are transformed through TF2 into `output_frame` (default `map`) befo
 ## Build and run
 
 ```bash
+source /opt/ros/<your_ros_distro>/setup.bash  # optional if exactly one ROS 2 distro is installed
 ./build.sh
 ./launch.sh
 ```
 
-The launch wrapper uses `/opt/ros/${ROS_DISTRO:-foxy}` and pins CMake's ROS tooling to `/usr/bin/python3`. Common overrides:
+The scripts use the sourced `ROS_DISTRO`; if none is sourced, they automatically select the sole distribution under `/opt/ros`. When several distributions are installed, source the intended one (or set `ROS_DISTRO`) to avoid an ambiguous build. CMake's ROS tooling is pinned to `/usr/bin/python3`. Common overrides:
 
 ```bash
 WEIGHTS=/opt/models/weldline.onnx ./launch.sh output_frame:=base_link processing_rate_hz:=30.0
@@ -53,7 +54,7 @@ Run the package build on the target architecture:
 ./scripts/build_deb.sh
 ```
 
-The script detects Debian architecture with `dpkg --print-architecture`, accepts only `amd64`, `arm64`, or `armhf`, generates ROS Debian metadata using `bloom`, and places the native `.deb` under `dist/`. The generated package declares `ros-${ROS_DISTRO}-realsense2-camera` as a Debian dependency, so installing the weldline `.deb` also installs the official RealSense driver and its `librealsense` dependencies from the configured ROS apt repository. It intentionally refuses to overwrite an existing `debian/` directory; review or remove generated metadata before a new generation.
+The script reads both the ROS distribution and Debian architecture from the current machine, accepts `amd64`, `arm64`, or `armhf`, generates ROS Debian metadata using `bloom`, and places the native artifact under `dist/`. The filename explicitly identifies its compatibility target, for example `weldline_detector_1.0.0_ros-humble_amd64.deb` or `weldline_detector_1.0.0_ros-jazzy_arm64.deb`; a paired `.build-info` file records the same values. The generated package declares `ros-${ROS_DISTRO}-realsense2-camera` as a Debian dependency, so installing the weldline `.deb` also installs the official RealSense driver and its `librealsense` dependencies from the configured ROS apt repository. It intentionally refuses to overwrite an existing `debian/` directory; review or remove generated metadata before a new generation.
 
 Required build tooling: `python3-bloom`, `dpkg-dev`, the selected ROS distribution, and the package dependencies resolved with `rosdep`.
 
