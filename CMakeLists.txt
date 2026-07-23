@@ -31,6 +31,8 @@ install(TARGETS yolo_weldline_3d_node DESTINATION lib/${PROJECT_NAME})
 install(FILES launch/yolo_weldline_3d.launch.xml DESTINATION share/${PROJECT_NAME}/launch)
 install(FILES config/yolo_weldline_3d.yaml DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY weights DESTINATION share/${PROJECT_NAME} OPTIONAL FILES_MATCHING PATTERN "*.onnx")
+install(PROGRAMS launch.sh scripts/ros_environment.sh scripts/realsense_visualize.py
+  DESTINATION lib/${PROJECT_NAME})
 install(FILES package.xml DESTINATION share/${PROJECT_NAME})
 
 ament_package()

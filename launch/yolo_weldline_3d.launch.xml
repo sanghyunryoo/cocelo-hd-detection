@@ -3,6 +3,7 @@
   <arg name="start_realsense" default="true"/>
   <arg name="camera_name" default="camera"/>
   <arg name="camera_serial_no" default=""/>
+  <arg name="usb_port_id" default=""/>
   <arg name="params_file" default="$(find-pkg-share weldline_reflectivity_detector)/config/yolo_weldline_3d.yaml"/>
   <arg name="weights" default="$(find-pkg-share weldline_reflectivity_detector)/weights/best.onnx"/>
   <arg name="color_topic" default="/camera/camera/color/image_raw"/>
@@ -13,6 +14,7 @@
   <include file="$(find-pkg-share realsense2_camera)/launch/rs_launch.py" if="$(var start_realsense)">
     <arg name="camera_name" value="$(var camera_name)"/>
     <arg name="serial_no" value="$(var camera_serial_no)"/>
+    <arg name="usb_port_id" value="$(var usb_port_id)"/>
     <arg name="enable_color" value="true"/>
     <arg name="enable_depth" value="true"/>
     <arg name="align_depth.enable" value="true"/>

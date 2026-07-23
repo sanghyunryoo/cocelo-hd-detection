@@ -26,6 +26,15 @@ source /opt/ros/<your_ros_distro>/setup.bash  # optional if exactly one ROS 2 di
 ./launch.sh
 ```
 
+Before the first launch, set a unique DDS domain and the physical RealSense USB topology in [config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml). `usb_port_id` is deliberately required when the integrated driver starts, preventing an arbitrary camera from being selected on multi-camera systems.
+
+```yaml
+ros_domain_id: 20
+usb_port_id: "2-1.3"
+```
+
+Inspect USB topology with `rs-enumerate-devices -s` or `udevadm info`, then use the value reported by the RealSense wrapper. Environment variables override the deployment file: `ROS_DOMAIN_ID=20 USB_PORT_ID=2-1.3 ./launch.sh`.
+
 The scripts use the sourced `ROS_DISTRO`; if none is sourced, they automatically select the sole distribution under `/opt/ros`. When several distributions are installed, source the intended one (or set `ROS_DISTRO`) to avoid an ambiguous build. CMake's ROS tooling is pinned to `/usr/bin/python3`. Common overrides:
 
 ```bash
@@ -43,6 +52,17 @@ For an externally managed RealSense driver, keep the detector only:
 ```bash
 ./launch.sh start_realsense:=false
 ```
+
+## RealSense diagnostics and visualization
+
+The explicit Python diagnostic utility is separate from the production C++ detector. It verifies the active Domain, queries the driver parameters (including `usb_port_id`), lists discovered RealSense topics every five seconds, and visualizes the color and aligned-depth streams.
+
+```bash
+source /opt/ros/<distro>/setup.bash
+ROS_DOMAIN_ID=20 python3 scripts/realsense_visualize.py --usb-port-id 2-1.3
+```
+
+Press `q` or `Esc` to close the visualization window.
 
 ROS 2 parameters are in [config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml). The launch file is XML-only; application logic resides in [src/yolo_weldline_3d_node.cpp](src/yolo_weldline_3d_node.cpp).
 

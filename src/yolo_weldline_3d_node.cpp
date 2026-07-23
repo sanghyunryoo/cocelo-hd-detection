@@ -36,6 +36,10 @@ YoloWeldline3DNode::YoloWeldline3DNode(const rclcpp::NodeOptions & options)
 : Node("yolo_weldline_3d_node", options), color_sub_(this, ""), depth_sub_(this, ""), info_sub_(this, "")
 {
   const auto weights = declare_parameter<std::string>("weights", "weights/best.onnx");
+  // These deployment values are read by launch.sh before rclcpp starts; declaring them
+  // here keeps the single YAML file valid when it is passed to this node.
+  (void)declare_parameter<int>("ros_domain_id", 0);
+  (void)declare_parameter<std::string>("usb_port_id", "");
   const auto color_topic = declare_parameter<std::string>("color_topic", "/camera/camera/color/image_raw");
   const auto depth_topic = declare_parameter<std::string>("depth_topic", "/camera/camera/aligned_depth_to_color/image_raw");
   const auto info_topic = declare_parameter<std::string>("camera_info_topic", "/camera/camera/color/camera_info");
