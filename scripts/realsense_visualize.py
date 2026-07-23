@@ -109,10 +109,12 @@ class AllRealSenseVisualizer(Node):
         self._labels: Dict[str, str] = {}
         self._last_device_report = ""
         self._last_topic_report = ""
-        self.create_timer(1.0, self._discover_streams)
-        self.create_timer(self._driver_start_interval_sec, self._start_next_pending_driver)
-        self.create_timer(2.0, self._check_managed_drivers)
-        self.create_timer(0.05, self._render)
+        self._timers = [
+            self.create_timer(1.0, self._discover_streams),
+            self.create_timer(self._driver_start_interval_sec, self._start_next_pending_driver),
+            self.create_timer(2.0, self._check_managed_drivers),
+            self.create_timer(0.05, self._render),
+        ]
         self._refresh_devices()
         self._start_next_pending_driver()
         self._discover_streams()
@@ -192,15 +194,9 @@ class AllRealSenseVisualizer(Node):
             self.get_logger().error(f"Could not start RealSense driver for {device.serial}: {error}")
 
     @staticmethod
-    def _wait_process_group(process: subprocess.Popen, timeout_sec: float) -> bool:
-        try:
-            process.wait(timeout=max(0.1, timeout_sec))
-            return True
-        except subprocess.TimeoutExpired:
-            return False
-
-    @staticmethod
     def _signal_process_group(process: subprocess.Popen, signum: int) -> None:
+        if process.poll() is not None:
+            return
         try:
             os.killpg(process.pid, signum)
         except ProcessLookupError:
@@ -211,27 +207,42 @@ class AllRealSenseVisualizer(Node):
             except OSError:
                 pass
 
-    def _stop_driver(self, key: str, reason: str) -> None:
-        process = self._managed_drivers.pop(key, None)
-        if process is None or process.poll() is not None:
-            return
-        self.get_logger().info(f"Stopping managed RealSense driver ({reason}): {key}")
-        self._signal_process_group(process, signal.SIGINT)
-        if self._wait_process_group(process, self._shutdown_timeout_sec):
-            return
-        self._signal_process_group(process, signal.SIGTERM)
-        if self._wait_process_group(process, 3.0):
-            return
-        self._signal_process_group(process, signal.SIGKILL)
-        self._wait_process_group(process, 1.0)
+    def _wait_for_processes(self, processes: Dict[str, subprocess.Popen], timeout_sec: float) -> List[str]:
+        deadline = time.monotonic() + max(0.1, timeout_sec)
+        remaining = list(processes)
+        while remaining and time.monotonic() < deadline:
+            remaining = [key for key in remaining if processes[key].poll() is None]
+            if remaining:
+                time.sleep(0.1)
+        return [key for key in remaining if processes[key].poll() is None]
 
     def close(self) -> None:
         if self._closing:
             return
         self._closing = True
-        for key in list(self._managed_drivers):
-            self._stop_driver(key, "visualizer shutdown")
-        time.sleep(0.5)
+        self._pending_drivers.clear()
+        for timer in self._timers:
+            timer.cancel()
+        processes = dict(self._managed_drivers)
+        self._managed_drivers.clear()
+        if not processes:
+            cv2.destroyAllWindows()
+            return
+        self.get_logger().info(f"Stopping {len(processes)} managed RealSense driver(s).")
+        for process in processes.values():
+            self._signal_process_group(process, signal.SIGINT)
+        remaining = self._wait_for_processes(processes, self._shutdown_timeout_sec)
+        if remaining:
+            self.get_logger().warn(f"Forcing RealSense driver shutdown with SIGTERM: {', '.join(remaining)}")
+            for key in remaining:
+                self._signal_process_group(processes[key], signal.SIGTERM)
+            remaining = self._wait_for_processes(processes, 1.0)
+        if remaining:
+            self.get_logger().warn(f"Forcing RealSense driver shutdown with SIGKILL: {', '.join(remaining)}")
+            for key in remaining:
+                self._signal_process_group(processes[key], signal.SIGKILL)
+            self._wait_for_processes(processes, 0.5)
+        cv2.destroyAllWindows()
 
     def _discover_streams(self) -> None:
         if self._closing:
@@ -374,7 +385,7 @@ def main() -> None:
     parser.add_argument("--domain-id", type=int, default=int(os.environ.get("ROS_DOMAIN_ID", config_domain)))
     parser.add_argument("--no-start-drivers", action="store_true", help="Only visualize already-running ROS camera topics.")
     parser.add_argument("--keep-stale-drivers", action="store_true", help="Do not clean up old visualizer_* RealSense drivers before starting.")
-    parser.add_argument("--shutdown-timeout-sec", type=float, default=8.0, help="Seconds to wait for each RealSense launch process to exit gracefully.")
+    parser.add_argument("--shutdown-timeout-sec", type=float, default=3.0, help="Seconds to wait for RealSense launch processes to exit gracefully before forcing shutdown.")
     parser.add_argument("--driver-start-interval-sec", type=float, default=2.0, help="Seconds between starting each RealSense driver after the first one.")
     parser.add_argument("--color-profile", default="640,480,30", help="RealSense RGB profile used only by the visualizer, formatted as width,height,fps.")
     arguments = parser.parse_args()

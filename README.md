@@ -57,7 +57,7 @@ For an externally managed RealSense driver, keep the detector only:
 
 The explicit Python visualizer is separate from the production C++ detector. Run it before `./launch.sh` when you need to decide which physical RealSense should be assigned to `usb_port_id` in `yolo_weldline_3d.yaml`.
 
-It uses `pyrealsense2` to discover every connected camera, starts one RGB-only `realsense2_camera` driver per camera, logs each serial number and USB topology, and overlays the same identifiers on each video tile. The first camera starts immediately, and additional cameras are staggered slightly to avoid transient USB ownership conflicts on Jetson. The visualizer uses a lightweight `640,480,30` RGB profile by default. The image subscribers use ROS sensor-data QoS, matching the RealSense image publishers. Pressing `q`, `Esc`, or `Ctrl+C` stops the temporary drivers it started and gives ROS launch time to release the USB interfaces.
+It uses `pyrealsense2` to discover every connected camera, starts one RGB-only `realsense2_camera` driver per camera, logs each serial number and USB topology, and overlays the same identifiers on each video tile. The first camera starts immediately, and additional cameras are staggered slightly to avoid transient USB ownership conflicts on Jetson. The visualizer uses a lightweight `640,480,30` RGB profile by default. The image subscribers use ROS sensor-data QoS, matching the RealSense image publishers. Pressing `q`, `Esc`, or `Ctrl+C` stops all temporary drivers together; it gives ROS launch a short grace period, then forces shutdown if a driver hangs.
 
 ```bash
 source /opt/ros/<distro>/setup.bash
