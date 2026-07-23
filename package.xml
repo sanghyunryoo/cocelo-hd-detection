@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>weldline_reflectivity_detector</name>
+  <version>1.0.0</version>
+  <description>Production ROS 2 RGB-D weld-line localization with Nav2-compatible pose output.</description>
+  <maintainer email="engineering@cocelo.ai">Cocelo Engineering</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>message_filters</depend>
+  <depend>cv_bridge</depend>
+  <depend>opencv</depend>
+  <!-- Runtime dependency: bloom converts this to ros-${ROS_DISTRO}-realsense2-camera. -->
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

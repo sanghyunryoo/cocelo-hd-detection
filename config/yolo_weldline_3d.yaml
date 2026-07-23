@@ -1,0 +1,18 @@
+yolo_weldline_3d_node:
+  ros__parameters:
+    # Relative paths are resolved by launch.sh; deploy an ONNX model with the package or pass weights:=.
+    weights: "weights/best.onnx"
+    color_topic: "/camera/camera/color/image_raw"
+    depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera/camera/color/camera_info"
+    output_frame: "map"
+    processing_rate_hz: 30.0
+    confidence_threshold: 0.40
+    nms_threshold: 0.25
+    depth_window: 7
+    use_line_detection: true
+    nav2_planar_goal: false
+    nav2_goal_topic: "/goal_pose"
+    debug_point_topic: "/weldline_yolo/debug/center_point"
+    marker_topic: "/weldline_yolo/debug/markers"
+    annotated_topic: "/weldline_yolo/debug/annotated_image"
