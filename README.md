@@ -33,7 +33,7 @@ ros_domain_id: 20
 usb_port_id: "2-1.3"
 ```
 
-Inspect USB topology with `rs-enumerate-devices -s` or `udevadm info`, then use the value reported by the RealSense wrapper. Environment variables override the deployment file: `ROS_DOMAIN_ID=20 USB_PORT_ID=2-1.3 ./launch.sh`.
+Inspect USB topology with the visualizer below, then use the `usb_port_id` overlaid on the camera image you want the detector to own. Environment variables override the deployment file: `ROS_DOMAIN_ID=20 USB_PORT_ID=2-1.3 ./launch.sh`.
 
 The scripts use the sourced `ROS_DISTRO`; if none is sourced, they automatically select the sole distribution under `/opt/ros`. When several distributions are installed, source the intended one (or set `ROS_DISTRO`) to avoid an ambiguous build. CMake's ROS tooling is pinned to `/usr/bin/python3`. Common overrides:
 
@@ -55,14 +55,16 @@ For an externally managed RealSense driver, keep the detector only:
 
 ## RealSense diagnostics and visualization
 
-The explicit Python diagnostic utility is separate from the production C++ detector. It lists every physically connected RealSense through `rs-enumerate-devices`, discovers every active RealSense color topic in the selected ROS Domain, and visualizes all RGB images in one tiled window. A physically connected camera must still have a running `realsense2_camera` driver before it can publish a video tile.
+The explicit Python visualizer is separate from the production C++ detector. Run it before `./launch.sh` when you need to decide which physical RealSense should be assigned to `usb_port_id` in `yolo_weldline_3d.yaml`.
+
+It uses `pyrealsense2` to discover every connected camera, starts one RGB-only `realsense2_camera` driver per camera, logs each serial number and USB topology, and overlays the same identifiers on each video tile. Closing the window stops the temporary drivers it started.
 
 ```bash
 source /opt/ros/<distro>/setup.bash
 ROS_DOMAIN_ID=20 python3 scripts/realsense_visualize.py
 ```
 
-Press `q` or `Esc` to close the visualization window.
+Use `--no-start-drivers` for read-only observation of already-running camera topics. Press `q` or `Esc` to close the visualization window.
 
 ROS 2 parameters are in [config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml). The launch file is XML-only; application logic resides in [src/yolo_weldline_3d_node.cpp](src/yolo_weldline_3d_node.cpp).
 
