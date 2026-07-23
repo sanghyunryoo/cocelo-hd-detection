@@ -47,6 +47,9 @@ private:
                                                          const sensor_msgs::msg::CameraInfo & info) const;
   std::optional<geometry_msgs::msg::PointStamped> transform_point(const geometry_msgs::msg::Point & point,
                                                                     const std_msgs::msg::Header & header);
+  void publish_status_image(const sensor_msgs::msg::Image::ConstSharedPtr & source, const cv::Mat & bgr,
+                            const std::string & status) const;
+  void publish_empty_debug(const std_msgs::msg::Header & header) const;
   void publish_debug(const std_msgs::msg::Header & header,
                      const geometry_msgs::msg::PointStamped & center,
                      const std::optional<geometry_msgs::msg::PointStamped> & start,

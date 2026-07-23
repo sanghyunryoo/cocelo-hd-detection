@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -102,14 +103,37 @@ void YoloWeldline3DNode::process_latest_frame()
     cv::Mat depth;
     if (frame->depth->encoding == "16UC1" || frame->depth->encoding == "mono16") depth_bridge->image.convertTo(depth, CV_32FC1, 0.001);
     else if (frame->depth->encoding == "32FC1") depth = depth_bridge->image;
-    else { RCLCPP_WARN_THROTTLE(logger_, *get_clock(), 5000, "Unsupported depth encoding: %s", frame->depth->encoding.c_str()); return; }
-    const auto detection = infer(color_bridge->image);
-    if (!detection) return;
-    const auto center_camera = project_pixel(detection->center, depth, *frame->info);
-    if (!center_camera) return;
+    else {
+      RCLCPP_WARN_THROTTLE(logger_, *get_clock(), 5000, "Unsupported depth encoding: %s", frame->depth->encoding.c_str());
+      publish_status_image(frame->color, color_bridge->image, "UNSUPPORTED DEPTH ENCODING: " + frame->depth->encoding);
+      publish_empty_debug(frame->color->header);
+      return;
+    }
     auto header = frame->depth->header; if (header.frame_id.empty()) header = frame->color->header;
+    const auto detection = infer(color_bridge->image);
+    if (!detection) {
+      publish_status_image(frame->color, color_bridge->image, "NO DETECTION");
+      publish_empty_debug(header);
+      return;
+    }
+    const auto center_camera = project_pixel(detection->center, depth, *frame->info);
+    if (!center_camera) {
+      cv::Mat annotated = color_bridge->image.clone();
+      cv::rectangle(annotated, detection->box, cv::Scalar(60, 220, 255), 2);
+      cv::circle(annotated, detection->center, 5, cv::Scalar(0, 220, 255), cv::FILLED);
+      publish_status_image(frame->color, annotated, "DETECTION OK / NO VALID DEPTH");
+      publish_empty_debug(header);
+      return;
+    }
     const auto center = transform_point(*center_camera, header);
-    if (!center) return;
+    if (!center) {
+      cv::Mat annotated = color_bridge->image.clone();
+      cv::rectangle(annotated, detection->box, cv::Scalar(60, 220, 255), 2);
+      cv::circle(annotated, detection->center, 5, cv::Scalar(0, 220, 255), cv::FILLED);
+      publish_status_image(frame->color, annotated, "DETECTION OK / TF UNAVAILABLE");
+      publish_empty_debug(header);
+      return;
+    }
     std::optional<geometry_msgs::msg::PointStamped> start, end;
     if (const auto p = project_pixel(detection->line_start, depth, *frame->info)) start = transform_point(*p, header);
     if (const auto p = project_pixel(detection->line_end, depth, *frame->info)) end = transform_point(*p, header);
@@ -134,6 +158,13 @@ void YoloWeldline3DNode::process_latest_frame()
     annotated_pub_->publish(*cv_bridge::CvImage(frame->color->header, "bgr8", annotated).toImageMsg());
   } catch (const std::exception & error) {
     RCLCPP_ERROR_THROTTLE(logger_, *get_clock(), 2000, "Frame processing failure: %s", error.what());
+    if (frame && frame->color) {
+      try {
+        const auto color_bridge = cv_bridge::toCvShare(frame->color, "bgr8");
+        publish_status_image(frame->color, color_bridge->image, "PROCESSING ERROR");
+        publish_empty_debug(frame->color->header);
+      } catch (const std::exception &) {}
+    }
   }
 }
 
@@ -195,6 +226,34 @@ std::optional<geometry_msgs::msg::PointStamped> YoloWeldline3DNode::transform_po
   if (output_frame_.empty() || output_frame_ == header.frame_id) return source;
   try { tf_buffer_->transform(source, result, output_frame_, tf2::durationFromSec(0.02)); return result; }
   catch (const tf2::TransformException & error) { RCLCPP_WARN_THROTTLE(logger_, *get_clock(), 2000, "No transform %s -> %s: %s", header.frame_id.c_str(), output_frame_.c_str(), error.what()); return std::nullopt; }
+}
+
+void YoloWeldline3DNode::publish_status_image(const sensor_msgs::msg::Image::ConstSharedPtr & source, const cv::Mat & bgr, const std::string & status) const
+{
+  cv::Mat annotated = bgr.clone();
+  cv::rectangle(annotated, cv::Rect(0, 0, annotated.cols, 40), cv::Scalar(0, 0, 0), cv::FILLED);
+  const cv::Scalar color = status == "NO DETECTION" ? cv::Scalar(0, 200, 255) : cv::Scalar(0, 120, 255);
+  cv::putText(annotated, status, {10, 26}, cv::FONT_HERSHEY_SIMPLEX, 0.75, color, 2, cv::LINE_AA);
+  annotated_pub_->publish(*cv_bridge::CvImage(source->header, "bgr8", annotated).toImageMsg());
+}
+
+void YoloWeldline3DNode::publish_empty_debug(const std_msgs::msg::Header & header) const
+{
+  geometry_msgs::msg::PointStamped point;
+  point.header = header;
+  point.point.x = std::numeric_limits<double>::quiet_NaN();
+  point.point.y = std::numeric_limits<double>::quiet_NaN();
+  point.point.z = std::numeric_limits<double>::quiet_NaN();
+  point_pub_->publish(point);
+
+  visualization_msgs::msg::MarkerArray markers;
+  visualization_msgs::msg::Marker clear;
+  clear.header = header;
+  clear.ns = "weldline";
+  clear.id = 0;
+  clear.action = visualization_msgs::msg::Marker::DELETEALL;
+  markers.markers.push_back(clear);
+  marker_pub_->publish(markers);
 }
 
 void YoloWeldline3DNode::publish_debug(const std_msgs::msg::Header &, const geometry_msgs::msg::PointStamped & center, const std::optional<geometry_msgs::msg::PointStamped> & start, const std::optional<geometry_msgs::msg::PointStamped> & end) const
