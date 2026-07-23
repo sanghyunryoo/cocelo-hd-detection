@@ -87,21 +87,24 @@ def enumerate_devices() -> List[RealSenseDevice]:
 
 
 class AllRealSenseVisualizer(Node):
-    def __init__(self, start_drivers: bool, shutdown_timeout_sec: float) -> None:
+    def __init__(self, start_drivers: bool, shutdown_timeout_sec: float, driver_start_interval_sec: float) -> None:
         super().__init__("realsense_visualizer")
         self._bridge = CvBridge()
         self._start_drivers = start_drivers
         self._shutdown_timeout_sec = shutdown_timeout_sec
+        self._driver_start_interval_sec = driver_start_interval_sec
         self._closing = False
         self._lock = threading.Lock()
         self._frames: Dict[str, Optional[np.ndarray]] = {}
         self._subscriptions = {}
         self._managed_drivers: Dict[str, subprocess.Popen] = {}
+        self._pending_drivers: List[RealSenseDevice] = []
         self._labels: Dict[str, str] = {}
         self._last_device_report = ""
         self._last_topic_report = ""
         self.create_timer(1.0, self._discover_streams)
-        self.create_timer(3.0, self._refresh_devices)
+        self.create_timer(self._driver_start_interval_sec, self._start_next_pending_driver)
+        self.create_timer(2.0, self._check_managed_drivers)
         self.create_timer(0.05, self._render)
         self._refresh_devices()
         self._discover_streams()
@@ -129,21 +132,31 @@ class AllRealSenseVisualizer(Node):
         if report != self._last_device_report:
             self.get_logger().info("Connected RealSense devices:\n" + report)
             self._last_device_report = report
-        current_keys = {item.usb_port_id or item.serial for item in devices}
-        for key in list(self._managed_drivers):
-            process = self._managed_drivers.get(key)
-            if process is not None and process.poll() is not None:
-                self._managed_drivers.pop(key, None)
-                self.get_logger().warn(f"Managed RealSense driver exited unexpectedly; will retry if device is present: {key}")
-            elif key not in current_keys:
-                self._stop_driver(key, "device disconnected")
         if not self._start_drivers:
             return
         for device in devices:
             key = device.usb_port_id or device.serial
-            if key in self._managed_drivers:
+            if key in self._managed_drivers or any((item.usb_port_id or item.serial) == key for item in self._pending_drivers):
                 continue
-            self._start_driver(device)
+            self._pending_drivers.append(device)
+            prefix = f"/{self._camera_name(device)}/{self._camera_name(device)}"
+            self._labels[prefix] = f"serial={device.serial} | usb_port_id={device.usb_port_id or 'n/a'}"
+            with self._lock:
+                self._frames[prefix] = None
+
+    def _check_managed_drivers(self) -> None:
+        if self._closing:
+            return
+        for key in list(self._managed_drivers):
+            process = self._managed_drivers.get(key)
+            if process is not None and process.poll() is not None:
+                self._managed_drivers.pop(key, None)
+                self.get_logger().warn(f"Managed RealSense driver exited unexpectedly: {key}")
+
+    def _start_next_pending_driver(self) -> None:
+        if self._closing or not self._start_drivers or not self._pending_drivers:
+            return
+        self._start_driver(self._pending_drivers.pop(0))
 
     def _start_driver(self, device: RealSenseDevice) -> None:
         if self._closing:
@@ -346,17 +359,24 @@ def main() -> None:
     parser.add_argument("--no-start-drivers", action="store_true", help="Only visualize already-running ROS camera topics.")
     parser.add_argument("--keep-stale-drivers", action="store_true", help="Do not clean up old visualizer_* RealSense drivers before starting.")
     parser.add_argument("--shutdown-timeout-sec", type=float, default=8.0, help="Seconds to wait for each RealSense launch process to exit gracefully.")
+    parser.add_argument("--driver-start-interval-sec", type=float, default=3.0, help="Seconds between starting each RealSense driver.")
     arguments = parser.parse_args()
     if not 0 <= arguments.domain_id <= 232:
         parser.error("--domain-id must be in 0..232")
     if arguments.shutdown_timeout_sec < 1.0:
         parser.error("--shutdown-timeout-sec must be >= 1.0")
+    if arguments.driver_start_interval_sec < 0.5:
+        parser.error("--driver-start-interval-sec must be >= 0.5")
     os.environ["ROS_DOMAIN_ID"] = str(arguments.domain_id)
     if not arguments.keep_stale_drivers:
         cleanup_stale_visualizer_drivers()
     rclpy.init()
     node_holder: List[Optional[AllRealSenseVisualizer]] = [None]
-    node = AllRealSenseVisualizer(not arguments.no_start_drivers, arguments.shutdown_timeout_sec)
+    node = AllRealSenseVisualizer(
+        not arguments.no_start_drivers,
+        arguments.shutdown_timeout_sec,
+        arguments.driver_start_interval_sec,
+    )
     node_holder[0] = node
     install_signal_handlers(node_holder)
     atexit.register(node.close)

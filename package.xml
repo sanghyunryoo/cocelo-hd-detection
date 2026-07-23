@@ -15,6 +15,7 @@
   <depend>tf2_geometry_msgs</depend>
   <depend>message_filters</depend>
   <depend>cv_bridge</depend>
+  <depend>image_transport</depend>
   <depend>opencv</depend>
   <!-- Runtime dependency: bloom converts this to ros-${ROS_DISTRO}-realsense2-camera. -->
   <exec_depend>realsense2_camera</exec_depend>
