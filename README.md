@@ -55,11 +55,11 @@ For an externally managed RealSense driver, keep the detector only:
 
 ## RealSense diagnostics and visualization
 
-The explicit Python diagnostic utility is separate from the production C++ detector. It verifies the active Domain, queries the driver parameters (including `usb_port_id`), lists discovered RealSense topics every five seconds, and visualizes the color and aligned-depth streams.
+The explicit Python diagnostic utility is separate from the production C++ detector. It lists every physically connected RealSense through `rs-enumerate-devices`, discovers every active RealSense color topic in the selected ROS Domain, and visualizes all RGB images in one tiled window. A physically connected camera must still have a running `realsense2_camera` driver before it can publish a video tile.
 
 ```bash
 source /opt/ros/<distro>/setup.bash
-ROS_DOMAIN_ID=20 python3 scripts/realsense_visualize.py --usb-port-id 2-1.3
+ROS_DOMAIN_ID=20 python3 scripts/realsense_visualize.py
 ```
 
 Press `q` or `Esc` to close the visualization window.
