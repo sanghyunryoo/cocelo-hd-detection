@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -19,7 +20,7 @@
 #include <tf2_ros/transform_listener.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 
-#include <opencv2/dnn.hpp>
+#include <onnxruntime_cxx_api.h>
 
 namespace weldline_reflectivity_detector
 {
@@ -30,7 +31,6 @@ public:
   ~YoloWeldline3DNode() override;
 
 private:
-  struct TensorRtContext;
   struct Detection { cv::Rect box; cv::Point center; cv::Point line_start; cv::Point line_end; float confidence; };
   struct FrameBundle {
     sensor_msgs::msg::Image::ConstSharedPtr color;
@@ -66,10 +66,15 @@ private:
   std::optional<FrameBundle> latest_frame_;
   rclcpp::TimerBase::SharedPtr processing_timer_;
 
-  cv::dnn::Net network_;
-  std::unique_ptr<TensorRtContext> tensorrt_;
+  Ort::Env ort_env_{ORT_LOGGING_LEVEL_WARNING, "weldline_onnx"};
+  Ort::SessionOptions ort_options_;
+  std::unique_ptr<Ort::Session> ort_session_;
+  Ort::MemoryInfo ort_memory_info_{Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)};
+  std::string input_name_;
+  std::string output_name_;
+  std::array<int64_t, 4> input_shape_{{1, 3, 640, 640}};
+  std::vector<float> input_tensor_;
   mutable std::mutex network_mutex_;
-  std::string inference_backend_;
   int network_width_{640};
   int network_height_{640};
   float confidence_threshold_{0.40F};

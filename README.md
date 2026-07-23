@@ -1,6 +1,6 @@
 # Weldline 3D Localization (ROS 2 / C++)
 
-Production-oriented RGB-D weld-line localization package. The detector is a native C++17 ROS 2 node using OpenCV DNN for ONNX inference; no Python runtime is part of the new YOLO 3D deployment path. Its bringup launches the official Intel RealSense ROS 2 driver (`realsense2_camera`) alongside the detector.
+Production-oriented RGB-D weld-line localization package. The detector is a native C++17 ROS 2 node using ONNX Runtime for ONNX inference and OpenCV only for image processing; no Python runtime is part of the new YOLO 3D deployment path. Its bringup launches the official Intel RealSense ROS 2 driver (`realsense2_camera`) alongside the detector.
 
 ## Runtime contract
 
@@ -41,7 +41,7 @@ The scripts use the sourced `ROS_DISTRO`; if none is sourced, they automatically
 WEIGHTS=/opt/models/weldline.onnx ./launch.sh output_frame:=base_link processing_rate_hz:=30.0
 ```
 
-`./build.sh` validates the configured ONNX model with the target machine's OpenCV DNN runtime. This intentionally fails the build when the target, such as Jetson, cannot load the model; a build artifact should not be produced if it would die at startup. Override the model used for validation with `WELDLINE_ONNX_MODEL=/opt/models/weldline.onnx ./build.sh`.
+`./build.sh` prepares an architecture-matched ONNX Runtime C++ SDK when the system does not already provide one, then validates the configured ONNX model with ONNX Runtime on the target machine. This avoids OpenCV DNN parser failures such as unsupported `TopK` nodes on Jetson while still failing the build if the model itself cannot be loaded. Override the model used for validation with `WELDLINE_ONNX_MODEL=/opt/models/weldline.onnx ./build.sh`.
 
 `launch.sh` starts `realsense2_camera/rs_launch.py` with color, depth, and aligned depth enabled. The default `camera_name:=camera` produces the input topics configured in the YAML file. Select a physical camera explicitly when several are connected:
 
@@ -90,7 +90,7 @@ Required build tooling: `python3-bloom`, `dpkg-dev`, the selected ROS distributi
 
 ## Deployment notes
 
-- Use a valid ONNX model supported by the OpenCV version installed on the target. The supplied model must be verified during CI; a corrupt or unsupported ONNX file is rejected at startup with a fatal diagnostic.
+- Use a valid ONNX model supported by ONNX Runtime on the target. The supplied model is verified during build; a corrupt or unsupported ONNX file is rejected at build/startup with a fatal diagnostic.
 - Keep the model and ROS distribution identical across AMD/ARM release builds for reproducible detector behavior.
 - Connect the sensor optical frame to `map` (or configure `output_frame` to a valid TF frame) before enabling Nav2 navigation.
 # cocelo-hd-detection

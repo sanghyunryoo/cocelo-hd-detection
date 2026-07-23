@@ -3,22 +3,15 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstring>
-#include <iostream>
 #include <limits>
 #include <numeric>
+#include <stdexcept>
 #include <utility>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <visualization_msgs/msg/marker.hpp>
-
-#ifdef WELDLINE_HAS_TENSORRT
-#include <NvInfer.h>
-#include <NvOnnxParser.h>
-#include <cuda_runtime_api.h>
-#endif
 
 using namespace std::chrono_literals;
 
@@ -28,79 +21,53 @@ namespace
 {
 constexpr int kSensorQueueDepth = 10;
 
-#ifdef WELDLINE_HAS_TENSORRT
-class TensorRtLogger final : public nvinfer1::ILogger
-{
-public:
-  void log(Severity severity, const char * message) noexcept override
-  {
-    if (severity <= Severity::kWARNING) {
-      std::cerr << "[TensorRT] " << message << '\n';
-    }
-  }
-};
-
-template<typename T>
-struct TrtDestroy
-{
-  void operator()(T * object) const noexcept
-  {
-    delete object;
-  }
-};
-#endif
-
 cv::Mat letterbox(const cv::Mat & image, const cv::Size & target, float & scale, int & pad_x, int & pad_y)
 {
   scale = std::min(static_cast<float>(target.width) / static_cast<float>(image.cols),
                    static_cast<float>(target.height) / static_cast<float>(image.rows));
-  const cv::Size resized_size(static_cast<int>(std::round(image.cols * scale)),
-                              static_cast<int>(std::round(image.rows * scale)));
+  const cv::Size resized_size(static_cast<int>(std::round(static_cast<float>(image.cols) * scale)),
+                              static_cast<int>(std::round(static_cast<float>(image.rows) * scale)));
   pad_x = (target.width - resized_size.width) / 2;
   pad_y = (target.height - resized_size.height) / 2;
   cv::Mat output(target, CV_8UC3, cv::Scalar(114, 114, 114));
   cv::resize(image, output(cv::Rect(pad_x, pad_y, resized_size.width, resized_size.height)), resized_size);
   return output;
 }
+
+float intersection_over_union(const cv::Rect & a, const cv::Rect & b)
+{
+  const int intersection = (a & b).area();
+  const int union_area = a.area() + b.area() - intersection;
+  return union_area > 0 ? static_cast<float>(intersection) / static_cast<float>(union_area) : 0.0F;
+}
+
+std::vector<int> nms_indices(const std::vector<cv::Rect> & boxes, const std::vector<float> & scores,
+                             const float threshold)
+{
+  std::vector<int> order(boxes.size());
+  std::iota(order.begin(), order.end(), 0);
+  std::sort(order.begin(), order.end(), [&scores](int lhs, int rhs) { return scores[lhs] > scores[rhs]; });
+  std::vector<int> kept;
+  for (const int index : order) {
+    bool suppressed = false;
+    for (const int kept_index : kept) {
+      if (intersection_over_union(boxes[static_cast<size_t>(index)], boxes[static_cast<size_t>(kept_index)]) > threshold) {
+        suppressed = true;
+        break;
+      }
+    }
+    if (!suppressed) kept.push_back(index);
+  }
+  return kept;
+}
 }  // namespace
 
-struct YoloWeldline3DNode::TensorRtContext
-{
-#ifdef WELDLINE_HAS_TENSORRT
-  TensorRtLogger logger;
-  std::unique_ptr<nvinfer1::IRuntime, TrtDestroy<nvinfer1::IRuntime>> runtime;
-  std::unique_ptr<nvinfer1::ICudaEngine, TrtDestroy<nvinfer1::ICudaEngine>> engine;
-  std::unique_ptr<nvinfer1::IExecutionContext, TrtDestroy<nvinfer1::IExecutionContext>> context;
-  cudaStream_t stream{nullptr};
-  int input_index{-1};
-  int output_index{-1};
-  std::vector<void *> device_buffers;
-  std::vector<float> input_host;
-  std::vector<float> output_host;
-  size_t input_bytes{0};
-  size_t output_bytes{0};
-  int output_rows{0};
-  int output_cols{0};
-#endif
-};
-
-YoloWeldline3DNode::~YoloWeldline3DNode()
-{
-#ifdef WELDLINE_HAS_TENSORRT
-  if (tensorrt_) {
-    for (void * buffer : tensorrt_->device_buffers) {
-      if (buffer != nullptr) cudaFree(buffer);
-    }
-    if (tensorrt_->stream != nullptr) cudaStreamDestroy(tensorrt_->stream);
-  }
-#endif
-}
+YoloWeldline3DNode::~YoloWeldline3DNode() = default;
 
 YoloWeldline3DNode::YoloWeldline3DNode(const rclcpp::NodeOptions & options)
 : Node("yolo_weldline_3d_node", options), color_sub_(this, ""), depth_sub_(this, ""), info_sub_(this, "")
 {
   const auto weights = declare_parameter<std::string>("weights", "weights/best.onnx");
-  inference_backend_ = declare_parameter<std::string>("inference_backend", "auto");
   // These deployment values are read by launch.sh before rclcpp starts; declaring them
   // here keeps the single YAML file valid when it is passed to this node.
   (void)declare_parameter<int>("ros_domain_id", 0);
@@ -121,87 +88,32 @@ YoloWeldline3DNode::YoloWeldline3DNode(const rclcpp::NodeOptions & options)
   const auto annotated_topic = declare_parameter<std::string>("annotated_topic", "/weldline_yolo/debug/annotated_image");
   if (rate_hz <= 0.0 || rate_hz > 120.0) throw std::invalid_argument("processing_rate_hz must be in (0, 120]");
 
-  if (inference_backend_ == "auto") {
-#ifdef WELDLINE_HAS_TENSORRT
-    inference_backend_ = "tensorrt";
-#else
-    inference_backend_ = "opencv";
-#endif
-  }
+  try {
+    ort_options_.SetIntraOpNumThreads(1);
+    ort_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    ort_session_ = std::make_unique<Ort::Session>(ort_env_, weights.c_str(), ort_options_);
+    Ort::AllocatorWithDefaultOptions allocator;
+    const auto input_name = ort_session_->GetInputNameAllocated(0, allocator);
+    const auto output_name = ort_session_->GetOutputNameAllocated(0, allocator);
+    input_name_ = input_name.get();
+    output_name_ = output_name.get();
 
-  if (inference_backend_ == "opencv") {
-    try {
-      network_ = cv::dnn::readNetFromONNX(weights);
-      if (network_.empty()) throw std::runtime_error("OpenCV returned an empty network");
-    } catch (const cv::Exception & error) {
-      throw std::runtime_error("Unable to load ONNX weights with OpenCV DNN '" + weights + "': " + error.what());
+    const auto input_shape = ort_session_->GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
+    if (input_shape.size() != 4) {
+      throw std::runtime_error("ONNX input must be a 4D NCHW tensor");
     }
-  } else if (inference_backend_ == "tensorrt") {
-#ifdef WELDLINE_HAS_TENSORRT
-    tensorrt_ = std::make_unique<TensorRtContext>();
-    auto builder = std::unique_ptr<nvinfer1::IBuilder, TrtDestroy<nvinfer1::IBuilder>>(
-      nvinfer1::createInferBuilder(tensorrt_->logger));
-    if (!builder) throw std::runtime_error("TensorRT createInferBuilder failed");
-    const auto flags = 1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
-    auto network = std::unique_ptr<nvinfer1::INetworkDefinition, TrtDestroy<nvinfer1::INetworkDefinition>>(
-      builder->createNetworkV2(flags));
-    if (!network) throw std::runtime_error("TensorRT createNetworkV2 failed");
-    auto parser = std::unique_ptr<nvonnxparser::IParser, TrtDestroy<nvonnxparser::IParser>>(
-      nvonnxparser::createParser(*network, tensorrt_->logger));
-    if (!parser) throw std::runtime_error("TensorRT ONNX parser creation failed");
-    if (!parser->parseFromFile(weights.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kWARNING))) {
-      std::string errors = "TensorRT cannot parse ONNX model '" + weights + "'";
-      for (int i = 0; i < parser->getNbErrors(); ++i) {
-        errors += "\n";
-        errors += parser->getError(i)->desc();
-      }
-      throw std::runtime_error(errors);
+    if (input_shape[1] > 0 && input_shape[1] != 3) {
+      throw std::runtime_error("ONNX input channel count must be 3");
     }
-    auto config = std::unique_ptr<nvinfer1::IBuilderConfig, TrtDestroy<nvinfer1::IBuilderConfig>>(
-      builder->createBuilderConfig());
-    if (!config) throw std::runtime_error("TensorRT createBuilderConfig failed");
-    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 1ULL << 30);
-    auto plan = std::unique_ptr<nvinfer1::IHostMemory, TrtDestroy<nvinfer1::IHostMemory>>(
-      builder->buildSerializedNetwork(*network, *config));
-    if (!plan) throw std::runtime_error("TensorRT buildSerializedNetwork failed");
-    tensorrt_->runtime.reset(nvinfer1::createInferRuntime(tensorrt_->logger));
-    if (!tensorrt_->runtime) throw std::runtime_error("TensorRT createInferRuntime failed");
-    tensorrt_->engine.reset(tensorrt_->runtime->deserializeCudaEngine(plan->data(), plan->size()));
-    if (!tensorrt_->engine) throw std::runtime_error("TensorRT deserializeCudaEngine failed");
-    tensorrt_->context.reset(tensorrt_->engine->createExecutionContext());
-    if (!tensorrt_->context) throw std::runtime_error("TensorRT createExecutionContext failed");
-    if (tensorrt_->engine->getNbBindings() != 2) throw std::runtime_error("TensorRT model must expose exactly one input and one output");
-    for (int i = 0; i < tensorrt_->engine->getNbBindings(); ++i) {
-      if (tensorrt_->engine->bindingIsInput(i)) tensorrt_->input_index = i;
-      else tensorrt_->output_index = i;
+    if (input_shape[2] > 0) network_height_ = static_cast<int>(input_shape[2]);
+    if (input_shape[3] > 0) network_width_ = static_cast<int>(input_shape[3]);
+    if (network_width_ <= 0 || network_height_ <= 0) {
+      throw std::runtime_error("ONNX input width/height must be positive");
     }
-    const auto input_dims = tensorrt_->engine->getBindingDimensions(tensorrt_->input_index);
-    const auto output_dims = tensorrt_->engine->getBindingDimensions(tensorrt_->output_index);
-    if (input_dims.nbDims != 4 || input_dims.d[1] != 3 || input_dims.d[2] != network_height_ || input_dims.d[3] != network_width_) {
-      throw std::runtime_error("TensorRT model input must be NCHW 1x3x640x640");
-    }
-    if (output_dims.nbDims != 3 || output_dims.d[2] < 5) {
-      throw std::runtime_error("TensorRT model output must be shaped 1xNxfive-or-more");
-    }
-    tensorrt_->output_rows = output_dims.d[1];
-    tensorrt_->output_cols = output_dims.d[2];
-    const int input_count = input_dims.d[0] * input_dims.d[1] * input_dims.d[2] * input_dims.d[3];
-    const int output_count = output_dims.d[0] * output_dims.d[1] * output_dims.d[2];
-    tensorrt_->input_host.resize(static_cast<size_t>(input_count));
-    tensorrt_->output_host.resize(static_cast<size_t>(output_count));
-    tensorrt_->input_bytes = tensorrt_->input_host.size() * sizeof(float);
-    tensorrt_->output_bytes = tensorrt_->output_host.size() * sizeof(float);
-    tensorrt_->device_buffers.resize(2, nullptr);
-    if (cudaMalloc(&tensorrt_->device_buffers[static_cast<size_t>(tensorrt_->input_index)], tensorrt_->input_bytes) != cudaSuccess ||
-        cudaMalloc(&tensorrt_->device_buffers[static_cast<size_t>(tensorrt_->output_index)], tensorrt_->output_bytes) != cudaSuccess ||
-        cudaStreamCreate(&tensorrt_->stream) != cudaSuccess) {
-      throw std::runtime_error("TensorRT CUDA allocation failed");
-    }
-#else
-    throw std::runtime_error("inference_backend:=tensorrt requested, but this package was built without TensorRT");
-#endif
-  } else {
-    throw std::runtime_error("inference_backend must be one of: auto, opencv, tensorrt");
+    input_shape_ = {1, 3, network_height_, network_width_};
+    input_tensor_.resize(static_cast<size_t>(input_shape_[0] * input_shape_[1] * input_shape_[2] * input_shape_[3]));
+  } catch (const Ort::Exception & error) {
+    throw std::runtime_error("Unable to load ONNX weights with ONNX Runtime '" + weights + "': " + error.what());
   }
 
   const auto sensor_qos = rclcpp::SensorDataQoS();
@@ -221,8 +133,8 @@ YoloWeldline3DNode::YoloWeldline3DNode(const rclcpp::NodeOptions & options)
   annotated_pub_ = create_publisher<sensor_msgs::msg::Image>(annotated_topic, rclcpp::QoS(5).best_effort());
   const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0 / rate_hz));
   processing_timer_ = create_wall_timer(period, std::bind(&YoloWeldline3DNode::process_latest_frame, this));
-  RCLCPP_INFO(logger_, "Ready: C++ ONNX RGB-D localization at %.1f Hz using %s backend; Nav2 goal topic: %s",
-              rate_hz, inference_backend_.c_str(), goal_topic.c_str());
+  RCLCPP_INFO(logger_, "Ready: C++ ONNX Runtime RGB-D localization at %.1f Hz; Nav2 goal topic: %s",
+              rate_hz, goal_topic.c_str());
 }
 
 void YoloWeldline3DNode::on_synchronized_frame(const sensor_msgs::msg::Image::ConstSharedPtr & color,
@@ -329,14 +241,17 @@ std::optional<YoloWeldline3DNode::Detection> YoloWeldline3DNode::infer(const cv:
     if (score < confidence_threshold_) continue;
     float x1 = row[0], y1 = row[1], x2 = row[2], y2 = row[3];
     if (x2 <= x1 || y2 <= y1) { const float cx = x1, cy = y1; x1 = cx - x2 / 2.0F; y1 = cy - y2 / 2.0F; x2 = cx + x2 / 2.0F; y2 = cy + y2 / 2.0F; }
-    x1 = (x1 - pad_x) / scale; y1 = (y1 - pad_y) / scale; x2 = (x2 - pad_x) / scale; y2 = (y2 - pad_y) / scale;
+    x1 = (x1 - static_cast<float>(pad_x)) / scale;
+    y1 = (y1 - static_cast<float>(pad_y)) / scale;
+    x2 = (x2 - static_cast<float>(pad_x)) / scale;
+    y2 = (y2 - static_cast<float>(pad_y)) / scale;
     const int left = std::clamp(static_cast<int>(std::round(x1)), 0, bgr.cols - 1);
     const int top = std::clamp(static_cast<int>(std::round(y1)), 0, bgr.rows - 1);
     const int right = std::clamp(static_cast<int>(std::round(x2)), left + 1, bgr.cols);
     const int bottom = std::clamp(static_cast<int>(std::round(y2)), top + 1, bgr.rows);
     boxes.emplace_back(left, top, right - left, bottom - top); scores.push_back(score);
   }
-  std::vector<int> kept; cv::dnn::NMSBoxes(boxes, scores, confidence_threshold_, nms_threshold_, kept);
+  std::vector<int> kept = nms_indices(boxes, scores, nms_threshold_);
   if (kept.empty()) return std::nullopt;
   const int index = *std::max_element(kept.begin(), kept.end(), [&scores](int a, int b) { return scores[a] < scores[b]; });
   const auto & box = boxes[static_cast<size_t>(index)];
@@ -353,46 +268,46 @@ std::optional<YoloWeldline3DNode::Detection> YoloWeldline3DNode::infer(const cv:
 cv::Mat YoloWeldline3DNode::forward_network(const cv::Mat & input)
 {
   std::scoped_lock lock(network_mutex_);
-  if (inference_backend_ == "opencv") {
-    cv::Mat output;
-    network_.setInput(cv::dnn::blobFromImage(input, 1.0 / 255.0, {}, {}, true, false));
-    network_.forward(output);
-    return output;
+  if (!ort_session_) throw std::runtime_error("ONNX Runtime session is not initialized");
+
+  const int area = network_width_ * network_height_;
+  for (int y = 0; y < network_height_; ++y) {
+    const auto * row = input.ptr<cv::Vec3b>(y);
+    for (int x = 0; x < network_width_; ++x) {
+      const auto & bgr = row[x];
+      const int index = y * network_width_ + x;
+      input_tensor_[static_cast<size_t>(0 * area + index)] = static_cast<float>(bgr[2]) / 255.0F;
+      input_tensor_[static_cast<size_t>(1 * area + index)] = static_cast<float>(bgr[1]) / 255.0F;
+      input_tensor_[static_cast<size_t>(2 * area + index)] = static_cast<float>(bgr[0]) / 255.0F;
+    }
   }
-  if (inference_backend_ == "tensorrt") {
-#ifdef WELDLINE_HAS_TENSORRT
-    if (!tensorrt_ || !tensorrt_->context) throw std::runtime_error("TensorRT backend is not initialized");
-    const int channels = 3;
-    const int area = network_width_ * network_height_;
-    for (int y = 0; y < network_height_; ++y) {
-      const auto * row = input.ptr<cv::Vec3b>(y);
-      for (int x = 0; x < network_width_; ++x) {
-        const auto & bgr = row[x];
-        const int index = y * network_width_ + x;
-        tensorrt_->input_host[static_cast<size_t>(0 * area + index)] = static_cast<float>(bgr[2]) / 255.0F;
-        tensorrt_->input_host[static_cast<size_t>(1 * area + index)] = static_cast<float>(bgr[1]) / 255.0F;
-        tensorrt_->input_host[static_cast<size_t>(2 * area + index)] = static_cast<float>(bgr[0]) / 255.0F;
-      }
-    }
-    (void)channels;
-    if (cudaMemcpyAsync(tensorrt_->device_buffers[static_cast<size_t>(tensorrt_->input_index)], tensorrt_->input_host.data(),
-                        tensorrt_->input_bytes, cudaMemcpyHostToDevice, tensorrt_->stream) != cudaSuccess) {
-      throw std::runtime_error("TensorRT input cudaMemcpyAsync failed");
-    }
-    if (!tensorrt_->context->enqueueV2(tensorrt_->device_buffers.data(), tensorrt_->stream, nullptr)) {
-      throw std::runtime_error("TensorRT enqueueV2 failed");
-    }
-    if (cudaMemcpyAsync(tensorrt_->output_host.data(), tensorrt_->device_buffers[static_cast<size_t>(tensorrt_->output_index)],
-                        tensorrt_->output_bytes, cudaMemcpyDeviceToHost, tensorrt_->stream) != cudaSuccess ||
-        cudaStreamSynchronize(tensorrt_->stream) != cudaSuccess) {
-      throw std::runtime_error("TensorRT output transfer failed");
-    }
-    return cv::Mat(tensorrt_->output_rows, tensorrt_->output_cols, CV_32F, tensorrt_->output_host.data()).clone();
-#else
-    throw std::runtime_error("TensorRT backend was not compiled");
-#endif
+
+  auto input_tensor = Ort::Value::CreateTensor<float>(
+    ort_memory_info_, input_tensor_.data(), input_tensor_.size(), input_shape_.data(), input_shape_.size());
+  const char * input_names[] = {input_name_.c_str()};
+  const char * output_names[] = {output_name_.c_str()};
+  auto outputs = ort_session_->Run(
+    Ort::RunOptions{nullptr}, input_names, &input_tensor, 1, output_names, 1);
+  if (outputs.empty() || !outputs.front().IsTensor()) {
+    throw std::runtime_error("ONNX Runtime did not return a tensor output");
   }
-  throw std::runtime_error("Unknown inference backend: " + inference_backend_);
+  const auto shape = outputs.front().GetTensorTypeAndShapeInfo().GetShape();
+  if (shape.size() != 2 && shape.size() != 3) {
+    throw std::runtime_error("ONNX output must be shaped [N, 5+], [1, N, 5+], or [1, 5+, N]");
+  }
+  const float * data = outputs.front().GetTensorData<float>();
+  const int first = static_cast<int>(shape[shape.size() - 2]);
+  const int second = static_cast<int>(shape[shape.size() - 1]);
+  if (second >= 5) {
+    return cv::Mat(first, second, CV_32F, const_cast<float *>(data)).clone();
+  }
+  if (first >= 5) {
+    cv::Mat channels_first(first, second, CV_32F, const_cast<float *>(data));
+    cv::Mat rows;
+    cv::transpose(channels_first, rows);
+    return rows;
+  }
+  throw std::runtime_error("ONNX output does not contain detection rows with at least 5 values");
 }
 
 std::optional<geometry_msgs::msg::Point> YoloWeldline3DNode::project_pixel(const cv::Point & pixel, const cv::Mat & depth, const sensor_msgs::msg::CameraInfo & info) const
