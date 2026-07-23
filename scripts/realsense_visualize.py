@@ -96,7 +96,7 @@ class AllRealSenseVisualizer(Node):
         self._closing = False
         self._lock = threading.Lock()
         self._frames: Dict[str, Optional[np.ndarray]] = {}
-        self._subscriptions = {}
+        self._image_subscriptions = {}
         self._managed_drivers: Dict[str, subprocess.Popen] = {}
         self._pending_drivers: List[RealSenseDevice] = []
         self._labels: Dict[str, str] = {}
@@ -230,11 +230,11 @@ class AllRealSenseVisualizer(Node):
         topics = {name for name, _ in self.get_topic_names_and_types()}
         for color_topic in sorted(name for name in topics if name.endswith("/color/image_raw")):
             prefix = color_topic[: -len("/color/image_raw")]
-            if prefix in self._subscriptions:
+            if prefix in self._image_subscriptions:
                 continue
             with self._lock:
                 self._frames[prefix] = None
-            self._subscriptions[prefix] = self.create_subscription(
+            self._image_subscriptions[prefix] = self.create_subscription(
                 Image, color_topic, lambda message, key=prefix: self._on_color(key, message), qos_profile_sensor_data
             )
             self.get_logger().info(f"Visualizing RGB topic: {color_topic}; {self._labels.get(prefix, 'externally managed')} ")
@@ -339,7 +339,14 @@ def cleanup_stale_visualizer_drivers() -> None:
 
 
 def install_signal_handlers(node_holder: Sequence[Optional[AllRealSenseVisualizer]]) -> None:
+    shutdown_started = {"value": False}
+
     def _handle_signal(signum: int, _frame) -> None:
+        if shutdown_started["value"]:
+            if rclpy.ok():
+                rclpy.shutdown()
+            return
+        shutdown_started["value"] = True
         node = node_holder[0]
         if node is not None:
             node.get_logger().info(f"Received signal {signum}; releasing RealSense resources.")
@@ -359,7 +366,7 @@ def main() -> None:
     parser.add_argument("--no-start-drivers", action="store_true", help="Only visualize already-running ROS camera topics.")
     parser.add_argument("--keep-stale-drivers", action="store_true", help="Do not clean up old visualizer_* RealSense drivers before starting.")
     parser.add_argument("--shutdown-timeout-sec", type=float, default=8.0, help="Seconds to wait for each RealSense launch process to exit gracefully.")
-    parser.add_argument("--driver-start-interval-sec", type=float, default=3.0, help="Seconds between starting each RealSense driver.")
+    parser.add_argument("--driver-start-interval-sec", type=float, default=8.0, help="Seconds between starting each RealSense driver.")
     arguments = parser.parse_args()
     if not 0 <= arguments.domain_id <= 232:
         parser.error("--domain-id must be in 0..232")

@@ -64,7 +64,13 @@ source /opt/ros/<distro>/setup.bash
 ROS_DOMAIN_ID=20 python3 scripts/realsense_visualize.py
 ```
 
-Use `--no-start-drivers` for read-only observation of already-running camera topics. By default, the script also cleans up stale `visualizer_*` RealSense launch processes left by a previous crash; pass `--keep-stale-drivers` only when you intentionally want to preserve those temporary drivers. If the USB bus is slow to release devices, increase the launch gap with `--driver-start-interval-sec 5`.
+Use `--no-start-drivers` for read-only observation of already-running camera topics. By default, the script also cleans up stale `visualizer_*` RealSense launch processes left by a previous crash; pass `--keep-stale-drivers` only when you intentionally want to preserve those temporary drivers. If the USB bus is slow to release devices, increase the launch gap with `--driver-start-interval-sec 12`.
+
+If RealSense logs `Failed to load plugin image_transport/raw_pub` or `No plugins found`, install the selected ROS distribution's image transport package before retrying:
+
+```bash
+sudo apt install ros-$ROS_DISTRO-image-transport
+```
 
 ROS 2 parameters are in [config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml). The launch file is XML-only; application logic resides in [src/yolo_weldline_3d_node.cpp](src/yolo_weldline_3d_node.cpp).
 
