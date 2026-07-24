@@ -1,46 +1,96 @@
 #!/usr/bin/env bash
-# Creates a native-architecture Debian package with bloom + dpkg-buildpackage.
+# Build a lightweight native Debian package from the local colcon install tree.
+# This is intentionally not a bloom release script; it is for field/CI artifacts.
 set -euo pipefail
+
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+package_name="cocelo-weldline-detector"
 machine_arch="$(dpkg --print-architecture)"
 case "$machine_arch" in amd64|arm64|armhf) ;; *) echo "Unsupported Debian architecture: $machine_arch" >&2; exit 2;; esac
-if [[ -n "${UBUNTU_CODENAME:-}" ]]; then
-  ubuntu_codename="$UBUNTU_CODENAME"
-elif [[ -r /etc/os-release ]]; then
-  # shellcheck disable=SC1091
-  . /etc/os-release
-  ubuntu_codename="${VERSION_CODENAME:-}"
-fi
-[[ -n "${ubuntu_codename:-}" ]] || {
-  echo "Cannot determine OS codename. Set UBUNTU_CODENAME explicitly." >&2
-  exit 2
-}
-command -v bloom-generate >/dev/null || { echo "Install bloom: sudo apt install python3-bloom" >&2; exit 2; }
-command -v dpkg-buildpackage >/dev/null || { echo "Install dpkg-dev." >&2; exit 2; }
+command -v dpkg-deb >/dev/null || { echo "dpkg-deb is required. Install the base dpkg package." >&2; exit 2; }
+
 # shellcheck disable=SC1091
 source "$project_dir/scripts/ros_environment.sh"
 source_ros_environment
-cd "$project_dir"
+
+version="$(sed -n 's:.*<version>\(.*\)</version>.*:\1:p' "$project_dir/package.xml" | head -1)"
+[[ -n "$version" ]] || { echo "Cannot read package version from package.xml." >&2; exit 2; }
+
 export WELDLINE_ONNX_MODEL="${WELDLINE_ONNX_MODEL:-$project_dir/weights/best.onnx}"
 [[ "$WELDLINE_ONNX_MODEL" = /* ]] || export WELDLINE_ONNX_MODEL="$project_dir/$WELDLINE_ONNX_MODEL"
 export ONNXRUNTIME_ROOT="$("$project_dir/scripts/ensure_onnxruntime.sh")"
-if [[ -e debian ]]; then
-  echo "debian/ already exists. Review and remove it before regenerating packaging metadata." >&2
-  exit 2
-fi
-bloom-generate rosdebian --os-name ubuntu --os-version "$ubuntu_codename" --ros-distro "$ros_distro"
-dpkg-buildpackage -b -us -uc -a"$machine_arch"
-mkdir -p dist
-package_file="$(find .. -maxdepth 1 -type f -name "ros-${ros_distro}-weldline-reflectivity-detector_*_${machine_arch}.deb" -print -quit)"
-[[ -n "$package_file" ]] || { echo "Expected Debian package was not produced." >&2; exit 1; }
-package_version="$(dpkg-deb -f "$package_file" Version | tr '/:' '__')"
-artifact="dist/weldline_detector_${package_version}_ros-${ros_distro}_${machine_arch}.deb"
-cp -f "$package_file" "$artifact"
+
+"$project_dir/build.sh"
+
+install_prefix="$project_dir/install/weldline_reflectivity_detector"
+binary="$install_prefix/lib/weldline_reflectivity_detector/yolo_weldline_3d_node"
+[[ -x "$binary" ]] || { echo "Built detector binary was not found: $binary" >&2; exit 1; }
+
+dist_dir="$project_dir/dist"
+work_dir="$dist_dir/.deb_build_${package_name}_${ros_distro}_${machine_arch}"
+stage_dir="$work_dir/root"
+rm -rf "$work_dir"
+mkdir -p "$stage_dir/DEBIAN" "$stage_dir/opt/ros/$ros_distro" "$dist_dir"
+cp -a "$install_prefix/." "$stage_dir/opt/ros/$ros_distro/"
+
+declare -a depends=(
+  "libc6"
+  "libgcc-s1"
+  "libstdc++6"
+  "python3"
+  "python3-numpy"
+  "python3-opencv"
+  "ros-${ros_distro}-rclcpp"
+  "ros-${ros_distro}-std-msgs"
+  "ros-${ros_distro}-sensor-msgs"
+  "ros-${ros_distro}-geometry-msgs"
+  "ros-${ros_distro}-visualization-msgs"
+  "ros-${ros_distro}-tf2"
+  "ros-${ros_distro}-tf2-ros"
+  "ros-${ros_distro}-tf2-geometry-msgs"
+  "ros-${ros_distro}-message-filters"
+  "ros-${ros_distro}-cv-bridge"
+  "ros-${ros_distro}-image-transport"
+  "ros-${ros_distro}-realsense2-camera"
+  "ros-${ros_distro}-ros2launch"
+)
+
+for library_name in libopencv_core libopencv_imgproc; do
+  library_path="$(ldd "$binary" | awk -v name="$library_name" '$1 ~ name {print $3; exit}')"
+  [[ -n "$library_path" && -e "$library_path" ]] || continue
+  real_library_path="$(readlink -f "$library_path")"
+  package="$(dpkg-query -S "$library_path" "$real_library_path" 2>/dev/null | head -1 | cut -d: -f1 || true)"
+  [[ -n "$package" ]] && depends+=("$package")
+done
+
+depends_csv="$(
+  printf '%s\n' "${depends[@]}" | sed '/^$/d' | sort -u |
+    awk 'BEGIN { sep = "" } { printf "%s%s", sep, $0; sep = ", " } END { print "" }'
+)"
+
+cat > "$stage_dir/DEBIAN/control" <<CONTROL
+Package: ${package_name}
+Version: ${version}
+Section: robotics
+Priority: optional
+Architecture: ${machine_arch}
+Maintainer: Cocelo Engineering <engineering@cocelo.ai>
+Depends: ${depends_csv}
+Description: Cocelo ROS 2 weldline RGB-D detector
+ Native ROS 2 C++ weldline detector package with RealSense bringup,
+ Nav2-compatible goal output, debug topics, and bundled ONNX Runtime.
+CONTROL
+
+artifact="$dist_dir/weldline_detector_${version}_ros-${ros_distro}_${machine_arch}.deb"
+dpkg-deb --root-owner-group --build "$stage_dir" "$artifact"
 {
-  echo "package=$(dpkg-deb -f "$package_file" Package)"
-  echo "version=$(dpkg-deb -f "$package_file" Version)"
+  echo "package=$package_name"
+  echo "version=$version"
   echo "architecture=$machine_arch"
   echo "ros_distro=$ros_distro"
-  echo "ubuntu_codename=$ubuntu_codename"
+  echo "install_prefix=/opt/ros/$ros_distro"
+  echo "onnxruntime_root=$ONNXRUNTIME_ROOT"
+  echo "depends=$depends_csv"
 } > "${artifact%.deb}.build-info"
-echo "Created: $project_dir/$artifact"
+rm -rf "$work_dir"
+echo "Created: $artifact"

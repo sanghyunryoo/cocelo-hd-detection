@@ -63,22 +63,19 @@ For an externally managed RealSense driver, keep the detector only:
 
 ## RealSense diagnostics and visualization
 
-The explicit Python visualizer is separate from the production C++ detector. Run it before `./launch.sh` when you need to decide which physical RealSense should be assigned to `usb_port_id` in `yolo_weldline_3d.yaml`.
+The Python visualizer is separate from the production C++ detector and intentionally has no ROS 2 dependency. Run it before `./launch.sh` when you need to decide which physical RealSense should be assigned to `usb_port_id` in `yolo_weldline_3d.yaml`.
 
-It uses `pyrealsense2` to discover every connected camera, starts one RGB-only `realsense2_camera` driver per camera, logs each serial number and USB topology, and overlays the same identifiers on each video tile. The first camera starts immediately, and additional cameras are staggered slightly to avoid transient USB ownership conflicts on Jetson. The visualizer uses a lightweight `640,480,30` RGB profile by default. The image subscribers use ROS sensor-data QoS, matching the RealSense image publishers. Pressing `q`, `Esc`, or `Ctrl+C` terminates all temporary drivers immediately; shutdown favors releasing the terminal over waiting for a graceful RealSense teardown.
-
-```bash
-source /opt/ros/<distro>/setup.bash
-ROS_DOMAIN_ID=20 python3 scripts/realsense_visualize.py
-```
-
-Use `--no-start-drivers` for read-only observation of already-running camera topics. By default, the script also cleans up stale `visualizer_*` RealSense launch processes left by a previous crash; pass `--keep-stale-drivers` only when you intentionally want to preserve those temporary drivers. If the USB bus is slow to release devices, increase the launch gap with `--driver-start-interval-sec 5` or lower the visualizer stream load with `--color-profile 424,240,15`.
-
-If RealSense logs `Failed to load plugin image_transport/raw_pub` or `No plugins found`, install the selected ROS distribution's image transport package before retrying:
+It uses `pyrealsense2` to discover and open every connected camera directly, logs each serial number and USB topology, overlays the same identifiers on each video tile, and can draw OpenCV-DNN detections using `weights/person_yolov5n.onnx`. Press `q`, `Esc`, or `Ctrl+C` to release every RealSense pipeline.
 
 ```bash
-sudo apt install ros-$ROS_DISTRO-image-transport
+sudo apt install python3-numpy python3-opencv
+python3 scripts/realsense_visualize.py
+python3 scripts/realsense_visualize.py --list-only
+python3 scripts/realsense_visualize.py --detect-fps 30 --target-class-id 0
+python3 scripts/realsense_visualize.py --no-detect
 ```
+
+The default visualizer profile is `640,480,30`; lower it with `--color-profile 424,240,15` on constrained USB buses. The detector overlay defaults to the COCO person class (`target_class_id=0`) and uses OpenCV DNN, so the production ROS node can keep using ONNX Runtime while this diagnostic stays lightweight.
 
 ROS 2 parameters are in [config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml). The launch file is XML-only; application logic resides in [src/yolo_weldline_3d_node.cpp](src/yolo_weldline_3d_node.cpp).
 
@@ -90,9 +87,9 @@ Run the package build on the target architecture:
 ./scripts/build_deb.sh
 ```
 
-The script reads both the ROS distribution and Debian architecture from the current machine, accepts `amd64`, `arm64`, or `armhf`, generates ROS Debian metadata using `bloom`, and places the native artifact under `dist/`. The filename explicitly identifies its compatibility target, for example `weldline_detector_1.0.0_ros-humble_amd64.deb` or `weldline_detector_1.0.0_ros-jazzy_arm64.deb`; a paired `.build-info` file records the same values. The generated package declares `ros-${ROS_DISTRO}-realsense2-camera` as a Debian dependency, so installing the weldline `.deb` also installs the official RealSense driver and its `librealsense` dependencies from the configured ROS apt repository. It intentionally refuses to overwrite an existing `debian/` directory; review or remove generated metadata before a new generation.
+The script reads both the ROS distribution and Debian architecture from the current machine, accepts `amd64`, `arm64`, or `armhf`, builds with `colcon`, stages the resulting ROS package under `/opt/ros/${ROS_DISTRO}`, and creates the `.deb` with `dpkg-deb`. The filename explicitly identifies its compatibility target, for example `weldline_detector_1.0.0_ros-humble_amd64.deb` or `weldline_detector_1.0.0_ros-jazzy_arm64.deb`; a paired `.build-info` file records the same values.
 
-Required build tooling: `python3-bloom`, `dpkg-dev`, the selected ROS distribution, and the package dependencies resolved with `rosdep`.
+This native package path does not require `bloom`. The package declares only the direct ROS runtime dependencies, the official `ros-${ROS_DISTRO}-realsense2-camera` driver dependency, `ros-${ROS_DISTRO}-ros2launch`, and the detected OpenCV runtime libraries. Required build tooling is the selected ROS distribution, `colcon`, a C++ compiler, and ordinary package build dependencies already needed by `./build.sh`.
 
 ## Deployment notes
 

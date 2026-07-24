@@ -1,27 +1,35 @@
 #!/usr/bin/env python3
-"""Start RGB drivers for every connected RealSense camera and visualize USB IDs."""
+"""Fast RealSense USB visualizer with optional OpenCV-DNN detection overlay.
+
+This diagnostic tool intentionally does not use ROS 2.  It opens every connected
+RealSense color stream directly through librealsense, overlays serial/USB IDs,
+and can draw detections from a lightweight ONNX model for quick field checks.
+"""
+from __future__ import annotations
+
 import argparse
-import atexit
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
-import os
 from pathlib import Path
 import re
-import shutil
 import signal
-import subprocess
-import threading
+import sys
 import time
-from typing import Dict, List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
-import rclpy
-from cv_bridge import CvBridge
-from rclpy.executors import ExternalShutdownException
-from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image
+
+try:
+    import pyrealsense2 as rs
+except ImportError as error:
+    rs = None
+    PYREALSENSE_IMPORT_ERROR = error
+else:
+    PYREALSENSE_IMPORT_ERROR = None
+
+
+Box = Tuple[int, int, int, int, float, int]
 
 
 @dataclass(frozen=True)
@@ -32,41 +40,36 @@ class RealSenseDevice:
     name: str
 
 
-def default_config_path() -> Optional[Path]:
+@dataclass
+class CameraRuntime:
+    device: RealSenseDevice
+    pipeline: object
+    last_frame: Optional[np.ndarray] = None
+    last_boxes: List[Box] = field(default_factory=list)
+    last_infer_time: float = 0.0
+    frame_count: int = 0
+    fps_time: float = field(default_factory=time.monotonic)
+    fps: float = 0.0
+
+
+def default_person_model() -> Path:
     script = Path(__file__).resolve()
     candidates = [
-        script.parents[1] / "config" / "yolo_weldline_3d.yaml",  # source tree
-        script.parents[2] / "share" / "weldline_reflectivity_detector" / "config" / "yolo_weldline_3d.yaml",  # installed package
-        Path.cwd() / "config" / "yolo_weldline_3d.yaml",
+        script.parents[1] / "weights" / "person_yolov5n.onnx",
+        script.parents[2] / "share" / "weldline_reflectivity_detector" / "weights" / "person_yolov5n.onnx",
+        Path.cwd() / "weights" / "person_yolov5n.onnx",
     ]
-    return next((path for path in candidates if path.is_file()), None)
-
-
-def yaml_scalar(path: Optional[Path], key: str, fallback: str = "") -> str:
-    if path is None:
-        return fallback
-    expression = re.compile(rf"^\s*{re.escape(key)}\s*:\s*(.*?)\s*(?:#.*)?$")
-    for line in path.read_text(encoding="utf-8").splitlines():
-        match = expression.match(line)
-        if match:
-            return match.group(1).strip().strip('"\'')
-    return fallback
+    return next((path for path in candidates if path.is_file()), candidates[0])
 
 
 def normalize_usb_port_id(physical_port: str) -> str:
-    """Return the stable USB topology token used by realsense2_camera, when available."""
     matches = re.findall(r"(?:^|/)([0-9]+-[0-9]+(?:\.[0-9]+)*(?::[0-9.]+)?)(?:/|$)", physical_port)
-    if not matches:
-        return physical_port
-    return matches[-1].split(":", 1)[0]
+    return matches[-1].split(":", 1)[0] if matches else physical_port
 
 
 def enumerate_devices() -> List[RealSenseDevice]:
-    """Use librealsense directly: it exposes the physical USB topology needed by rs_launch."""
-    try:
-        import pyrealsense2 as rs
-    except ImportError as error:
-        raise RuntimeError("pyrealsense2 is required to auto-start cameras: " + str(error)) from error
+    if rs is None:
+        raise RuntimeError(f"pyrealsense2 is required: {PYREALSENSE_IMPORT_ERROR}")
     devices = []
     for device in rs.context().query_devices():
         serial = device.get_info(rs.camera_info.serial_number)
@@ -75,347 +78,307 @@ def enumerate_devices() -> List[RealSenseDevice]:
             physical_port = device.get_info(rs.camera_info.physical_port)
         except RuntimeError:
             physical_port = ""
-        devices.append(
-            RealSenseDevice(
-                serial=serial,
-                usb_port_id=normalize_usb_port_id(physical_port),
-                physical_port=physical_port,
-                name=name,
-            )
-        )
+        devices.append(RealSenseDevice(serial, normalize_usb_port_id(physical_port), physical_port, name))
     return sorted(devices, key=lambda item: (item.usb_port_id, item.serial))
 
 
-class AllRealSenseVisualizer(Node):
+def parse_profile(profile: str) -> Tuple[int, int, int]:
+    if not re.fullmatch(r"[1-9][0-9]*,[1-9][0-9]*,[1-9][0-9]*", profile):
+        raise argparse.ArgumentTypeError("profile must be width,height,fps, for example 640,480,30")
+    width, height, fps = (int(value) for value in profile.split(","))
+    return width, height, fps
+
+
+def parse_tile_size(tile_size: str) -> Tuple[int, int]:
+    if not re.fullmatch(r"[1-9][0-9]*,[1-9][0-9]*", tile_size):
+        raise argparse.ArgumentTypeError("tile size must be width,height, for example 640,360")
+    width, height = (int(value) for value in tile_size.split(","))
+    return width, height
+
+
+def letterbox(image: np.ndarray, size: int) -> Tuple[np.ndarray, float, int, int]:
+    height, width = image.shape[:2]
+    scale = min(size / float(width), size / float(height))
+    resized_w, resized_h = int(round(width * scale)), int(round(height * scale))
+    pad_x, pad_y = (size - resized_w) // 2, (size - resized_h) // 2
+    canvas = np.full((size, size, 3), 114, dtype=np.uint8)
+    resized = cv2.resize(image, (resized_w, resized_h), interpolation=cv2.INTER_LINEAR)
+    canvas[pad_y : pad_y + resized_h, pad_x : pad_x + resized_w] = resized
+    return canvas, scale, pad_x, pad_y
+
+
+class OpenCVDnnDetector:
     def __init__(
         self,
-        start_drivers: bool,
-        shutdown_timeout_sec: float,
-        driver_start_interval_sec: float,
-        color_profile: str,
+        weights: Path,
+        input_size: int,
+        confidence_threshold: float,
+        nms_threshold: float,
+        target_class_id: int,
     ) -> None:
-        super().__init__("realsense_visualizer")
-        self._bridge = CvBridge()
-        self._start_drivers = start_drivers
-        self._shutdown_timeout_sec = shutdown_timeout_sec
-        self._driver_start_interval_sec = driver_start_interval_sec
-        self._color_profile = color_profile
-        self._closing = False
-        self._lock = threading.Lock()
-        self._frames: Dict[str, Optional[np.ndarray]] = {}
-        self._image_subscriptions = {}
-        self._managed_drivers: Dict[str, subprocess.Popen] = {}
-        self._pending_drivers: List[RealSenseDevice] = []
-        self._labels: Dict[str, str] = {}
-        self._last_device_report = ""
-        self._last_topic_report = ""
-        self._timers = [
-            self.create_timer(1.0, self._discover_streams),
-            self.create_timer(self._driver_start_interval_sec, self._start_next_pending_driver),
-            self.create_timer(2.0, self._check_managed_drivers),
-            self.create_timer(0.05, self._render),
+        if not weights.is_file():
+            raise FileNotFoundError(f"Detection ONNX file not found: {weights}")
+        self.input_size = input_size
+        self.confidence_threshold = confidence_threshold
+        self.nms_threshold = nms_threshold
+        self.target_class_id = target_class_id
+        self.net = cv2.dnn.readNetFromONNX(str(weights))
+        self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+        self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+
+    def detect(self, bgr: np.ndarray) -> List[Box]:
+        input_image, scale, pad_x, pad_y = letterbox(bgr, self.input_size)
+        blob = cv2.dnn.blobFromImage(input_image, 1.0 / 255.0, (self.input_size, self.input_size), swapRB=True, crop=False)
+        self.net.setInput(blob)
+        output = self.net.forward()
+        rows = self._as_rows(output)
+        boxes: List[List[int]] = []
+        scores: List[float] = []
+        class_ids: List[int] = []
+        image_h, image_w = bgr.shape[:2]
+
+        for row in rows:
+            if row.shape[0] < 5:
+                continue
+            score = float(row[4])
+            class_id = -1
+            if row.shape[0] == 6:
+                class_id = int(round(float(row[5])))
+            elif row.shape[0] > 6:
+                has_objectness = row.shape[0] != 84
+                class_start = 5 if has_objectness else 4
+                class_scores = row[class_start:]
+                if class_scores.size == 0:
+                    continue
+                objectness = float(row[4]) if has_objectness else 1.0
+                if self.target_class_id >= 0:
+                    if self.target_class_id >= class_scores.size:
+                        continue
+                    class_id = self.target_class_id
+                    score = objectness * float(class_scores[self.target_class_id])
+                else:
+                    class_id = int(np.argmax(class_scores))
+                    score = objectness * float(class_scores[class_id])
+            if self.target_class_id >= 0 and class_id >= 0 and class_id != self.target_class_id:
+                continue
+            if self.target_class_id > 0 and class_id < 0:
+                continue
+            if score < self.confidence_threshold:
+                continue
+
+            x1, y1, x2, y2 = (float(row[0]), float(row[1]), float(row[2]), float(row[3]))
+            if x2 <= x1 or y2 <= y1:
+                cx, cy, width, height = x1, y1, x2, y2
+                x1, y1, x2, y2 = cx - width / 2.0, cy - height / 2.0, cx + width / 2.0, cy + height / 2.0
+            x1 = (x1 - pad_x) / scale
+            y1 = (y1 - pad_y) / scale
+            x2 = (x2 - pad_x) / scale
+            y2 = (y2 - pad_y) / scale
+            left = max(0, min(image_w - 1, int(round(x1))))
+            top = max(0, min(image_h - 1, int(round(y1))))
+            right = max(left + 1, min(image_w, int(round(x2))))
+            bottom = max(top + 1, min(image_h, int(round(y2))))
+            boxes.append([left, top, right - left, bottom - top])
+            scores.append(score)
+            class_ids.append(class_id)
+
+        kept = cv2.dnn.NMSBoxes(boxes, scores, self.confidence_threshold, self.nms_threshold)
+        if len(kept) == 0:
+            return []
+        indices = np.array(kept).reshape(-1)
+        return [
+            (boxes[index][0], boxes[index][1], boxes[index][2], boxes[index][3], scores[index], class_ids[index])
+            for index in indices
         ]
-        self._refresh_devices()
-        self._start_next_pending_driver()
-        self._discover_streams()
-        self.get_logger().info(
-            f"ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID', '0')}; "
-            f"visualizing every connected RealSense RGB stream; auto-start={start_drivers}"
-        )
 
     @staticmethod
-    def _camera_name(device: RealSenseDevice) -> str:
-        return "visualizer_" + re.sub(r"[^A-Za-z0-9_]", "_", device.serial)
+    def _as_rows(output: np.ndarray) -> np.ndarray:
+        output = np.asarray(output)
+        if output.ndim == 3:
+            output = output[0]
+        if output.ndim != 2:
+            return np.empty((0, 0), dtype=np.float32)
+        if output.shape[0] < output.shape[1] and output.shape[0] in (5, 6, 84, 85):
+            output = output.T
+        return output.astype(np.float32, copy=False)
 
-    def _refresh_devices(self) -> None:
-        if self._closing:
-            return
+
+def start_cameras(devices: Sequence[RealSenseDevice], profile: Tuple[int, int, int]) -> List[CameraRuntime]:
+    width, height, fps = profile
+    runtimes: List[CameraRuntime] = []
+    for device in devices:
+        pipeline = rs.pipeline()
+        config = rs.config()
+        config.enable_device(device.serial)
+        config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
         try:
-            devices = enumerate_devices()
+            pipeline.start(config)
         except RuntimeError as error:
-            self.get_logger().error(str(error))
-            return
-        report = "\n".join(
-            f"{item.name}: serial={item.serial}, usb_port_id={item.usb_port_id or '<unavailable>'}, "
-            f"physical_port={item.physical_port or '<unavailable>'}" for item in devices
-        ) or "none"
-        if report != self._last_device_report:
-            self.get_logger().info("Connected RealSense devices:\n" + report)
-            self._last_device_report = report
-        if not self._start_drivers:
-            return
-        for device in devices:
-            key = device.usb_port_id or device.serial
-            if key in self._managed_drivers or any((item.usb_port_id or item.serial) == key for item in self._pending_drivers):
-                continue
-            self._pending_drivers.append(device)
-            prefix = f"/{self._camera_name(device)}/{self._camera_name(device)}"
-            self._labels[prefix] = f"serial={device.serial} | usb_port_id={device.usb_port_id or 'n/a'}"
-            with self._lock:
-                self._frames[prefix] = None
-
-    def _check_managed_drivers(self) -> None:
-        if self._closing:
-            return
-        for key in list(self._managed_drivers):
-            process = self._managed_drivers.get(key)
-            if process is not None and process.poll() is not None:
-                self._managed_drivers.pop(key, None)
-                self.get_logger().warn(f"Managed RealSense driver exited unexpectedly: {key}")
-
-    def _start_next_pending_driver(self) -> None:
-        if self._closing or not self._start_drivers or not self._pending_drivers:
-            return
-        self._start_driver(self._pending_drivers.pop(0))
-
-    def _start_driver(self, device: RealSenseDevice) -> None:
-        if self._closing:
-            return
-        if shutil.which("ros2") is None:
-            self.get_logger().error("ros2 command is unavailable; source the target ROS 2 distribution first.")
-            return
-        camera_name = self._camera_name(device)
-        command = [
-            "ros2", "launch", "realsense2_camera", "rs_launch.py",
-            f"camera_name:={camera_name}", f"camera_namespace:={camera_name}", f"serial_no:=_{device.serial}",
-            "enable_color:=true", f"rgb_camera.color_profile:={self._color_profile}",
-            "enable_depth:=false", "align_depth.enable:=false",
-        ]
-        try:
-            process = subprocess.Popen(command, start_new_session=True)
-            key = device.usb_port_id or device.serial
-            self._managed_drivers[key] = process
-            prefix = f"/{camera_name}/{camera_name}"
-            self._labels[prefix] = f"serial={device.serial} | usb_port_id={device.usb_port_id or 'n/a'}"
-            with self._lock:
-                self._frames[prefix] = None
-            self.get_logger().info("Started visualizer driver: " + " ".join(command))
-        except OSError as error:
-            self.get_logger().error(f"Could not start RealSense driver for {device.serial}: {error}")
-
-    @staticmethod
-    def _signal_process_group(process: subprocess.Popen, signum: int) -> None:
-        if process.poll() is not None:
-            return
-        try:
-            os.killpg(process.pid, signum)
-        except ProcessLookupError:
-            pass
-        except OSError:
-            try:
-                process.send_signal(signum)
-            except OSError:
-                pass
-
-    def _wait_for_processes(self, processes: Dict[str, subprocess.Popen], timeout_sec: float) -> List[str]:
-        deadline = time.monotonic() + max(0.1, timeout_sec)
-        remaining = list(processes)
-        while remaining and time.monotonic() < deadline:
-            remaining = [key for key in remaining if processes[key].poll() is None]
-            if remaining:
-                time.sleep(0.1)
-        return [key for key in remaining if processes[key].poll() is None]
-
-    def close(self) -> None:
-        if self._closing:
-            return
-        self._closing = True
-        self._pending_drivers.clear()
-        for timer in self._timers:
-            timer.cancel()
-        processes = dict(self._managed_drivers)
-        self._managed_drivers.clear()
-        if not processes:
-            cv2.destroyAllWindows()
-            return
-        self.get_logger().info(f"Stopping {len(processes)} managed RealSense driver(s).")
-        for process in processes.values():
-            self._signal_process_group(process, signal.SIGTERM)
-        remaining = self._wait_for_processes(processes, self._shutdown_timeout_sec)
-        if remaining:
-            self.get_logger().warn(f"Forcing RealSense driver shutdown with SIGKILL: {', '.join(remaining)}")
-            for key in remaining:
-                self._signal_process_group(processes[key], signal.SIGKILL)
-            self._wait_for_processes(processes, 0.1)
-        cv2.destroyAllWindows()
-
-    def _discover_streams(self) -> None:
-        if self._closing:
-            return
-        topics = {name for name, _ in self.get_topic_names_and_types()}
-        for color_topic in sorted(name for name in topics if name.endswith("/color/image_raw")):
-            prefix = color_topic[: -len("/color/image_raw")]
-            if prefix in self._image_subscriptions:
-                continue
-            with self._lock:
-                self._frames[prefix] = None
-            self._image_subscriptions[prefix] = self.create_subscription(
-                Image, color_topic, lambda message, key=prefix: self._on_color(key, message), qos_profile_sensor_data
-            )
-            self.get_logger().info(f"Visualizing RGB topic: {color_topic}; {self._labels.get(prefix, 'externally managed')} ")
-        report = ", ".join(sorted(name for name in topics if name.endswith("/color/image_raw")))
-        if not report:
-            report = "no /color/image_raw topics discovered yet"
-        if report != self._last_topic_report:
-            self.get_logger().info("Active RealSense RGB topics: " + report)
-            self._last_topic_report = report
-
-    def _on_color(self, key: str, message: Image) -> None:
-        try:
-            frame = self._bridge.imgmsg_to_cv2(message, desired_encoding="bgr8")
-            with self._lock:
-                self._frames[key] = frame
-        except Exception as error:
-            self.get_logger().warn(f"{key} RGB conversion failed: {error}")
-
-    def _render(self) -> None:
-        if self._closing:
-            return
-        with self._lock:
-            snapshots = [(key, None if frame is None else frame.copy()) for key, frame in self._frames.items()]
-        tiles = []
-        for prefix, frame in snapshots:
-            if frame is None:
-                frame = np.zeros((360, 640, 3), dtype=np.uint8)
-                cv2.putText(frame, "waiting for RGB stream", (22, 192), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 180), 2, cv2.LINE_AA)
-            label = self._labels.get(prefix, "external camera")
-            cv2.rectangle(frame, (0, 0), (frame.shape[1], 46), (0, 0, 0), cv2.FILLED)
-            cv2.putText(frame, prefix, (8, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 0), 1, cv2.LINE_AA)
-            cv2.putText(frame, label, (8, 39), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 255), 1, cv2.LINE_AA)
-            tiles.append(cv2.resize(frame, (640, 360)))
-        if not tiles:
-            return
-        columns = math.ceil(math.sqrt(len(tiles)))
-        rows = math.ceil(len(tiles) / columns)
-        blank = np.zeros((360, 640, 3), dtype=np.uint8)
-        tiles.extend([blank] * (rows * columns - len(tiles)))
-        canvas = np.vstack([np.hstack(tiles[index * columns : (index + 1) * columns]) for index in range(rows)])
-        try:
-            cv2.imshow("All RealSense RGB streams (q or Esc to quit)", canvas)
-        except cv2.error as error:
-            self.get_logger().error(f"OpenCV window unavailable; closing visualizer cleanly: {error}")
-            rclpy.shutdown()
-            return
-        if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
-            rclpy.shutdown()
+            print(f"[ERROR] Cannot open serial={device.serial}, usb_port_id={device.usb_port_id or 'n/a'}: {error}", file=sys.stderr)
+            continue
+        print(
+            f"[INFO] Opened {device.name}: serial={device.serial}, "
+            f"usb_port_id={device.usb_port_id or 'n/a'}, physical_port={device.physical_port or 'n/a'}"
+        )
+        runtimes.append(CameraRuntime(device=device, pipeline=pipeline))
+    return runtimes
 
 
-def cleanup_stale_visualizer_drivers() -> None:
-    """Terminate RealSense launch processes left by a prior visualizer crash."""
-    pgrep = shutil.which("pgrep")
-    if pgrep is None:
+def update_frame(runtime: CameraRuntime) -> None:
+    frames = runtime.pipeline.poll_for_frames()
+    if not frames:
         return
-    result = subprocess.run(
-        [pgrep, "-af", "camera_name:=visualizer_"],
-        text=True,
-        capture_output=True,
-        check=False,
+    color = frames.get_color_frame()
+    if not color:
+        return
+    runtime.last_frame = np.asanyarray(color.get_data())
+    runtime.frame_count += 1
+    now = time.monotonic()
+    elapsed = now - runtime.fps_time
+    if elapsed >= 1.0:
+        runtime.fps = runtime.frame_count / elapsed
+        runtime.frame_count = 0
+        runtime.fps_time = now
+
+
+def draw_overlay(image: np.ndarray, runtime: CameraRuntime, boxes: Sequence[Box]) -> np.ndarray:
+    frame = image.copy()
+    header_h = 70
+    cv2.rectangle(frame, (0, 0), (frame.shape[1], header_h), (0, 0, 0), cv2.FILLED)
+    cv2.putText(frame, runtime.device.name, (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1, cv2.LINE_AA)
+    cv2.putText(
+        frame,
+        f"serial={runtime.device.serial} | usb_port_id={runtime.device.usb_port_id or 'n/a'}",
+        (8, 45),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.52,
+        (0, 255, 255),
+        1,
+        cv2.LINE_AA,
     )
-    if result.returncode not in (0, 1):
-        return
-    current_pid = os.getpid()
-    stale_pids = []
-    for line in result.stdout.splitlines():
-        fields = line.strip().split(maxsplit=1)
-        if not fields:
-            continue
-        try:
-            pid = int(fields[0])
-        except ValueError:
-            continue
-        if pid != current_pid:
-            stale_pids.append(pid)
-    for pid in stale_pids:
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            continue
-        except OSError:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
-    deadline = time.monotonic() + 0.2
-    for pid in stale_pids:
-        while time.monotonic() < deadline:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(0.1)
+    cv2.putText(
+        frame,
+        f"fps={runtime.fps:4.1f} | detections={len(boxes)}",
+        (8, 65),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.48,
+        (220, 220, 220),
+        1,
+        cv2.LINE_AA,
+    )
+    for left, top, width, height, score, class_id in boxes:
+        right, bottom = left + width, top + height
+        cv2.rectangle(frame, (left, top), (right, bottom), (60, 220, 255), 2)
+        label = f"id={class_id} {score:.2f}" if class_id >= 0 else f"{score:.2f}"
+        cv2.putText(frame, label, (left, max(18, top - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (60, 220, 255), 1, cv2.LINE_AA)
+    return frame
+
+
+def make_canvas(runtimes: Sequence[CameraRuntime], tile_size: Tuple[int, int]) -> np.ndarray:
+    tile_w, tile_h = tile_size
+    tiles = []
+    for runtime in runtimes:
+        frame = runtime.last_frame
+        if frame is None:
+            frame = np.zeros((tile_h, tile_w, 3), dtype=np.uint8)
+            cv2.putText(frame, "waiting for RGB stream", (20, tile_h // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 180), 2, cv2.LINE_AA)
         else:
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except OSError:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
+            frame = draw_overlay(frame, runtime, runtime.last_boxes)
+            frame = cv2.resize(frame, (tile_w, tile_h), interpolation=cv2.INTER_AREA)
+        tiles.append(frame)
+    columns = max(1, math.ceil(math.sqrt(len(tiles))))
+    rows = math.ceil(len(tiles) / columns)
+    blank = np.zeros((tile_h, tile_w, 3), dtype=np.uint8)
+    tiles.extend([blank] * (rows * columns - len(tiles)))
+    return np.vstack([np.hstack(tiles[index * columns : (index + 1) * columns]) for index in range(rows)])
 
 
-def install_signal_handlers(node_holder: Sequence[Optional[AllRealSenseVisualizer]]) -> None:
-    shutdown_started = {"value": False}
-
-    def _handle_signal(signum: int, _frame) -> None:
-        if shutdown_started["value"]:
-            os._exit(128 + signum)
-        shutdown_started["value"] = True
-        node = node_holder[0]
-        if node is not None:
-            node.get_logger().info(f"Received signal {signum}; releasing RealSense resources.")
-            node.close()
-        os._exit(128 + signum)
-
-    signal.signal(signal.SIGINT, _handle_signal)
-    signal.signal(signal.SIGTERM, _handle_signal)
+def stop_cameras(runtimes: Sequence[CameraRuntime]) -> None:
+    for runtime in runtimes:
+        try:
+            runtime.pipeline.stop()
+            print(f"[INFO] Released serial={runtime.device.serial}, usb_port_id={runtime.device.usb_port_id or 'n/a'}")
+        except RuntimeError as error:
+            print(f"[WARN] Release failed for serial={runtime.device.serial}: {error}", file=sys.stderr)
+    cv2.destroyAllWindows()
 
 
-def main() -> None:
-    config = default_config_path()
-    config_domain = yaml_scalar(config, "ros_domain_id", "0")
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--domain-id", type=int, default=int(os.environ.get("ROS_DOMAIN_ID", config_domain)))
-    parser.add_argument("--no-start-drivers", action="store_true", help="Only visualize already-running ROS camera topics.")
-    parser.add_argument("--keep-stale-drivers", action="store_true", help="Do not clean up old visualizer_* RealSense drivers before starting.")
-    parser.add_argument("--shutdown-timeout-sec", type=float, default=0.2, help="Seconds to wait after SIGTERM before forcing RealSense shutdown with SIGKILL.")
-    parser.add_argument("--driver-start-interval-sec", type=float, default=2.0, help="Seconds between starting each RealSense driver after the first one.")
-    parser.add_argument("--color-profile", default="640,480,30", help="RealSense RGB profile used only by the visualizer, formatted as width,height,fps.")
-    arguments = parser.parse_args()
-    if not 0 <= arguments.domain_id <= 232:
-        parser.error("--domain-id must be in 0..232")
-    if arguments.shutdown_timeout_sec < 0.0:
-        parser.error("--shutdown-timeout-sec must be >= 0.0")
-    if arguments.driver_start_interval_sec < 0.5:
-        parser.error("--driver-start-interval-sec must be >= 0.5")
-    if not re.fullmatch(r"[1-9][0-9]*,[1-9][0-9]*,[1-9][0-9]*", arguments.color_profile):
-        parser.error("--color-profile must use width,height,fps, for example 640,480,30")
-    os.environ["ROS_DOMAIN_ID"] = str(arguments.domain_id)
-    if not arguments.keep_stale_drivers:
-        cleanup_stale_visualizer_drivers()
-    rclpy.init()
-    node_holder: List[Optional[AllRealSenseVisualizer]] = [None]
-    node = AllRealSenseVisualizer(
-        not arguments.no_start_drivers,
-        arguments.shutdown_timeout_sec,
-        arguments.driver_start_interval_sec,
-        arguments.color_profile,
-    )
-    node_holder[0] = node
-    install_signal_handlers(node_holder)
-    atexit.register(node.close)
+    parser.add_argument("--list-only", action="store_true", help="Only print connected RealSense serial/USB IDs and exit.")
+    parser.add_argument("--color-profile", default="640,480,30", type=parse_profile, help="Color stream profile: width,height,fps.")
+    parser.add_argument("--tile-size", default="640,360", type=parse_tile_size, help="Display tile size: width,height.")
+    parser.add_argument("--weights", type=Path, default=default_person_model(), help="ONNX detector model. Default: weights/person_yolov5n.onnx.")
+    parser.add_argument("--no-detect", action="store_true", help="Disable OpenCV-DNN detection overlay.")
+    parser.add_argument("--detect-fps", type=float, default=15.0, help="Maximum detector FPS per camera; display still runs as fast as possible.")
+    parser.add_argument("--input-size", type=int, default=640, help="Square detector input size.")
+    parser.add_argument("--confidence-threshold", type=float, default=0.35)
+    parser.add_argument("--nms-threshold", type=float, default=0.45)
+    parser.add_argument("--target-class-id", type=int, default=0, help="COCO person is 0. Use -1 for best class.")
+    args = parser.parse_args()
+
+    if len(args.tile_size) != 2 or args.tile_size[0] <= 0 or args.tile_size[1] <= 0:
+        parser.error("--tile-size must be width,height")
+    if args.detect_fps <= 0.0:
+        parser.error("--detect-fps must be > 0")
+    if args.input_size <= 0:
+        parser.error("--input-size must be > 0")
+
     try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
+        devices = enumerate_devices()
+    except RuntimeError as error:
+        print(f"[ERROR] {error}", file=sys.stderr)
+        return 2
+    if not devices:
+        print("[ERROR] No RealSense devices found.", file=sys.stderr)
+        return 1
+    print("[INFO] Connected RealSense devices:")
+    for device in devices:
+        print(f"  {device.name}: serial={device.serial}, usb_port_id={device.usb_port_id or 'n/a'}, physical_port={device.physical_port or 'n/a'}")
+    if args.list_only:
+        return 0
+
+    detector: Optional[OpenCVDnnDetector] = None
+    if not args.no_detect:
+        try:
+            detector = OpenCVDnnDetector(args.weights, args.input_size, args.confidence_threshold, args.nms_threshold, args.target_class_id)
+        except Exception as error:
+            print(f"[ERROR] Cannot load detector with OpenCV DNN: {error}", file=sys.stderr)
+            return 2
+        print(f"[INFO] Detection enabled: weights={args.weights}, target_class_id={args.target_class_id}")
+
+    stop_requested = False
+
+    def handle_signal(_signum, _frame) -> None:
+        nonlocal stop_requested
+        stop_requested = True
+
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
+    runtimes = start_cameras(devices, args.color_profile)
+    if not runtimes:
+        return 1
+
+    window_name = "RealSense USB visualizer + detection (q/Esc/Ctrl+C to quit)"
+    interval = 1.0 / args.detect_fps
+    try:
+        while not stop_requested:
+            now = time.monotonic()
+            for runtime in runtimes:
+                update_frame(runtime)
+                if detector is not None and runtime.last_frame is not None and now - runtime.last_infer_time >= interval:
+                    runtime.last_boxes = detector.detect(runtime.last_frame)
+                    runtime.last_infer_time = now
+            canvas = make_canvas(runtimes, args.tile_size)
+            cv2.imshow(window_name, canvas)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
+                break
     finally:
-        node.close()
-        atexit.unregister(node.close)
-        node_holder[0] = None
-        node.destroy_node()
-        cv2.destroyAllWindows()
-        if rclpy.ok():
-            rclpy.shutdown()
+        stop_cameras(runtimes)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

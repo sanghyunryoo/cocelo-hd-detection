@@ -24,11 +24,15 @@ if [[ -f "$script_dir/config/yolo_weldline_3d.yaml" ]]; then
   project_dir="$script_dir"
   environment_helper="$script_dir/scripts/ros_environment.sh"
   parameter_config="$script_dir/config/yolo_weldline_3d.yaml"
+  source_tree_invocation=true
+  weights_default="$project_dir/weights/best.onnx"
 else
   # Installed Debian invocation: ros2 run weldline_reflectivity_detector launch.sh
   project_dir="$(cd "$script_dir/../.." && pwd)"
   environment_helper="$script_dir/ros_environment.sh"
   parameter_config="$project_dir/share/weldline_reflectivity_detector/config/yolo_weldline_3d.yaml"
+  source_tree_invocation=false
+  weights_default="$project_dir/share/weldline_reflectivity_detector/weights/best.onnx"
 fi
 read_deployment_value() {
   local key="$1"
@@ -58,12 +62,14 @@ fi
 # shellcheck disable=SC1091
 source "$environment_helper"
 source_ros_environment
-if [[ ! -f "$project_dir/install/setup.bash" ]]; then "$project_dir/build.sh"; fi
-set +u
-# shellcheck disable=SC1091
-source "$project_dir/install/setup.bash"
-set -u
-weights="${WEIGHTS:-$project_dir/weights/best.onnx}"
+if [[ "$source_tree_invocation" == true ]]; then
+  if [[ ! -f "$project_dir/install/setup.bash" ]]; then "$project_dir/build.sh"; fi
+  set +u
+  # shellcheck disable=SC1091
+  source "$project_dir/install/setup.bash"
+  set -u
+fi
+weights="${WEIGHTS:-$weights_default}"
 launch_command=(
   ros2 launch weldline_reflectivity_detector yolo_weldline_3d.launch.xml
   weights:="$weights" usb_port_id:="$usb_port_id" "$@"
