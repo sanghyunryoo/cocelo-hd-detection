@@ -7,6 +7,7 @@ source "$project_dir/scripts/ros_environment.sh"
 source_ros_environment
 cd "$project_dir"
 model_path="${WELDLINE_ONNX_MODEL:-$project_dir/weights/best.onnx}"
+[[ "$model_path" = /* ]] || model_path="$project_dir/$model_path"
 onnxruntime_root="$("$project_dir/scripts/ensure_onnxruntime.sh")"
 colcon build --packages-select weldline_reflectivity_detector --cmake-args \
   -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}" \

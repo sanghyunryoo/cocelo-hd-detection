@@ -41,6 +41,12 @@ The scripts use the sourced `ROS_DISTRO`; if none is sourced, they automatically
 WEIGHTS=/opt/models/weldline.onnx ./launch.sh output_frame:=base_link processing_rate_hz:=30.0
 ```
 
+An example COCO person detector is included as `weights/person_yolov5n.onnx`. It uses the same `1x3x640x640` RGB input layout; run it with class filtering enabled:
+
+```bash
+WEIGHTS=$PWD/weights/person_yolov5n.onnx ./launch.sh target_class_id:=0
+```
+
 `./build.sh` prepares an architecture-matched ONNX Runtime C++ SDK when the system does not already provide one, then validates the configured ONNX model with ONNX Runtime on the target machine. This avoids OpenCV DNN parser failures such as unsupported `TopK` nodes on Jetson while still failing the build if the model itself cannot be loaded. Override the model used for validation with `WELDLINE_ONNX_MODEL=/opt/models/weldline.onnx ./build.sh`.
 
 `launch.sh` starts `realsense2_camera/rs_launch.py` with color, depth, and aligned depth enabled. The default `camera_name:=camera` produces the input topics configured in the YAML file. Select a physical camera explicitly when several are connected:

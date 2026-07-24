@@ -77,6 +77,7 @@ private:
   mutable std::mutex network_mutex_;
   int network_width_{640};
   int network_height_{640};
+  int target_class_id_{-1};
   float confidence_threshold_{0.40F};
   float nms_threshold_{0.25F};
   int depth_window_{7};

@@ -22,6 +22,7 @@ source "$project_dir/scripts/ros_environment.sh"
 source_ros_environment
 cd "$project_dir"
 export WELDLINE_ONNX_MODEL="${WELDLINE_ONNX_MODEL:-$project_dir/weights/best.onnx}"
+[[ "$WELDLINE_ONNX_MODEL" = /* ]] || export WELDLINE_ONNX_MODEL="$project_dir/$WELDLINE_ONNX_MODEL"
 export ONNXRUNTIME_ROOT="$("$project_dir/scripts/ensure_onnxruntime.sh")"
 if [[ -e debian ]]; then
   echo "debian/ already exists. Review and remove it before regenerating packaging metadata." >&2

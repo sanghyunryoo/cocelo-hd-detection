@@ -79,6 +79,7 @@ YoloWeldline3DNode::YoloWeldline3DNode(const rclcpp::NodeOptions & options)
   const auto rate_hz = declare_parameter<double>("processing_rate_hz", 30.0);
   confidence_threshold_ = static_cast<float>(declare_parameter<double>("confidence_threshold", 0.40));
   nms_threshold_ = static_cast<float>(declare_parameter<double>("nms_threshold", 0.25));
+  const auto target_class_id = declare_parameter<int64_t>("target_class_id", -1);
   depth_window_ = std::max(1, static_cast<int>(declare_parameter<int>("depth_window", 7)));
   use_line_detection_ = declare_parameter<bool>("use_line_detection", true);
   planar_goal_ = declare_parameter<bool>("nav2_planar_goal", false);
@@ -87,6 +88,10 @@ YoloWeldline3DNode::YoloWeldline3DNode(const rclcpp::NodeOptions & options)
   const auto marker_topic = declare_parameter<std::string>("marker_topic", "/weldline_yolo/debug/markers");
   const auto annotated_topic = declare_parameter<std::string>("annotated_topic", "/weldline_yolo/debug/annotated_image");
   if (rate_hz <= 0.0 || rate_hz > 120.0) throw std::invalid_argument("processing_rate_hz must be in (0, 120]");
+  if (target_class_id < -1 || target_class_id > std::numeric_limits<int>::max()) {
+    throw std::invalid_argument("target_class_id must be -1 or a non-negative class id");
+  }
+  target_class_id_ = static_cast<int>(target_class_id);
 
   try {
     ort_options_.SetIntraOpNumThreads(1);
@@ -237,7 +242,29 @@ std::optional<YoloWeldline3DNode::Detection> YoloWeldline3DNode::infer(const cv:
   for (int i = 0; i < rows.rows; ++i) {
     const float * row = rows.ptr<float>(i); if (rows.cols < 5) continue;
     float score = row[4];
-    if (rows.cols > 6) { score = *std::max_element(row + 4, row + rows.cols); }
+    int class_id = -1;
+    if (rows.cols == 6) {
+      class_id = static_cast<int>(std::round(row[5]));
+    } else if (rows.cols > 6) {
+      const bool has_objectness = rows.cols != 84;  // YOLOv8 COCO is [x,y,w,h,80 classes]; YOLOv5 is [x,y,w,h,obj,80 classes].
+      const int class_start = has_objectness ? 5 : 4;
+      const int class_count = rows.cols - class_start;
+      if (class_count <= 0) continue;
+      const float objectness = has_objectness ? row[4] : 1.0F;
+      if (target_class_id_ >= 0) {
+        if (target_class_id_ >= class_count) continue;
+        class_id = target_class_id_;
+        score = objectness * row[class_start + target_class_id_];
+      } else {
+        const auto * begin = row + class_start;
+        const auto * end = row + rows.cols;
+        const auto * best = std::max_element(begin, end);
+        class_id = static_cast<int>(std::distance(begin, best));
+        score = objectness * (*best);
+      }
+    }
+    if (target_class_id_ >= 0 && class_id >= 0 && class_id != target_class_id_) continue;
+    if (target_class_id_ > 0 && class_id < 0) continue;
     if (score < confidence_threshold_) continue;
     float x1 = row[0], y1 = row[1], x2 = row[2], y2 = row[3];
     if (x2 <= x1 || y2 <= y1) { const float cx = x1, cy = y1; x1 = cx - x2 / 2.0F; y1 = cy - y2 / 2.0F; x2 = cx + x2 / 2.0F; y2 = cy + y2 / 2.0F; }
