@@ -65,17 +65,18 @@ For an externally managed RealSense driver, keep the detector only:
 
 The Python visualizer is separate from the production C++ detector and intentionally has no ROS 2 dependency. Run it before `./launch.sh` when you need to decide which physical RealSense should be assigned to `usb_port_id` in `yolo_weldline_3d.yaml`.
 
-It uses `pyrealsense2` to discover and open every connected camera directly, logs each serial number and USB topology, overlays the same identifiers on each video tile, and can draw OpenCV-DNN detections using `weights/person_yolov5n.onnx`. Press `q`, `Esc`, or `Ctrl+C` to release every RealSense pipeline.
+It uses `pyrealsense2` to discover and open every connected camera directly, logs each serial number and USB topology, overlays the same identifiers on each video tile, and can draw ONNX Runtime detections using `weights/person_yolov5n.onnx`. OpenCV is used only for image display and drawing, not ONNX inference. Press `q`, `Esc`, or `Ctrl+C` to release every RealSense pipeline.
 
 ```bash
 sudo apt install python3-numpy python3-opencv
+python3 -m pip install --user onnxruntime
 python3 scripts/realsense_visualize.py
 python3 scripts/realsense_visualize.py --list-only
 python3 scripts/realsense_visualize.py --detect-fps 30 --target-class-id 0
 python3 scripts/realsense_visualize.py --no-detect
 ```
 
-The default visualizer profile is `640,480,30`; lower it with `--color-profile 424,240,15` on constrained USB buses. The detector overlay defaults to the COCO person class (`target_class_id=0`) and uses OpenCV DNN, so the production ROS node can keep using ONNX Runtime while this diagnostic stays lightweight.
+The default visualizer profile is `640,480,30`; lower it with `--color-profile 424,240,15` on constrained USB buses. The detector overlay defaults to the COCO person class (`target_class_id=0`). If Python ONNX Runtime is not installed, use `--no-detect` for USB/image-only mode.
 
 ROS 2 parameters are in [config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml). The launch file is XML-only; application logic resides in [src/yolo_weldline_3d_node.cpp](src/yolo_weldline_3d_node.cpp).
 

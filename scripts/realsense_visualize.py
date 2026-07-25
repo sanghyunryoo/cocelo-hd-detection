@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Fast RealSense USB visualizer with optional OpenCV-DNN detection overlay.
+"""Fast RealSense USB visualizer with optional ONNX Runtime detection overlay.
 
 This diagnostic tool intentionally does not use ROS 2.  It opens every connected
 RealSense color stream directly through librealsense, overlays serial/USB IDs,
 and can draw detections from a lightweight ONNX model for quick field checks.
+OpenCV is used only for image handling and display; ONNX inference is never run
+through OpenCV DNN.
 """
 from __future__ import annotations
 
@@ -62,6 +64,29 @@ def default_person_model() -> Path:
     return next((path for path in candidates if path.is_file()), candidates[0])
 
 
+def python_vendor_paths() -> List[Path]:
+    script = Path(__file__).resolve()
+    return [
+        script.parents[1] / "third_party" / "python",
+        script.parent / "python_vendor",
+    ]
+
+
+def import_onnxruntime():
+    for path in python_vendor_paths():
+        if path.is_dir() and str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+    try:
+        import onnxruntime as ort
+    except ImportError as error:
+        raise RuntimeError(
+            "Python ONNX Runtime is required for detection overlay. "
+            "Install it with `python3 -m pip install --user onnxruntime`, "
+            "or run this visualizer with `--no-detect` for USB/image-only mode."
+        ) from error
+    return ort
+
+
 def normalize_usb_port_id(physical_port: str) -> str:
     matches = re.findall(r"(?:^|/)([0-9]+-[0-9]+(?:\.[0-9]+)*(?::[0-9.]+)?)(?:/|$)", physical_port)
     return matches[-1].split(":", 1)[0] if matches else physical_port
@@ -107,7 +132,7 @@ def letterbox(image: np.ndarray, size: int) -> Tuple[np.ndarray, float, int, int
     return canvas, scale, pad_x, pad_y
 
 
-class OpenCVDnnDetector:
+class OnnxRuntimeDetector:
     def __init__(
         self,
         weights: Path,
@@ -122,15 +147,20 @@ class OpenCVDnnDetector:
         self.confidence_threshold = confidence_threshold
         self.nms_threshold = nms_threshold
         self.target_class_id = target_class_id
-        self.net = cv2.dnn.readNetFromONNX(str(weights))
-        self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-        self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        ort = import_onnxruntime()
+        session_options = ort.SessionOptions()
+        session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        session_options.intra_op_num_threads = 1
+        self.session = ort.InferenceSession(str(weights), sess_options=session_options, providers=["CPUExecutionProvider"])
+        self.input = self.session.get_inputs()[0]
+        self.output_name = self.session.get_outputs()[0].name
+        self.input_dtype = np.float16 if self.input.type == "tensor(float16)" else np.float32
 
     def detect(self, bgr: np.ndarray) -> List[Box]:
         input_image, scale, pad_x, pad_y = letterbox(bgr, self.input_size)
-        blob = cv2.dnn.blobFromImage(input_image, 1.0 / 255.0, (self.input_size, self.input_size), swapRB=True, crop=False)
-        self.net.setInput(blob)
-        output = self.net.forward()
+        rgb = cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB)
+        tensor = np.transpose(rgb, (2, 0, 1))[np.newaxis, :, :, :].astype(self.input_dtype) / self.input_dtype(255.0)
+        output = self.session.run([self.output_name], {self.input.name: tensor})[0]
         rows = self._as_rows(output)
         boxes: List[List[int]] = []
         scores: List[float] = []
@@ -182,10 +212,7 @@ class OpenCVDnnDetector:
             scores.append(score)
             class_ids.append(class_id)
 
-        kept = cv2.dnn.NMSBoxes(boxes, scores, self.confidence_threshold, self.nms_threshold)
-        if len(kept) == 0:
-            return []
-        indices = np.array(kept).reshape(-1)
+        indices = nms_indices(boxes, scores, self.nms_threshold)
         return [
             (boxes[index][0], boxes[index][1], boxes[index][2], boxes[index][3], scores[index], class_ids[index])
             for index in indices
@@ -201,6 +228,27 @@ class OpenCVDnnDetector:
         if output.shape[0] < output.shape[1] and output.shape[0] in (5, 6, 84, 85):
             output = output.T
         return output.astype(np.float32, copy=False)
+
+
+def intersection_over_union(lhs: Sequence[int], rhs: Sequence[int]) -> float:
+    ax1, ay1, aw, ah = lhs
+    bx1, by1, bw, bh = rhs
+    ax2, ay2 = ax1 + aw, ay1 + ah
+    bx2, by2 = bx1 + bw, by1 + bh
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    intersection = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    union = aw * ah + bw * bh - intersection
+    return float(intersection) / float(union) if union > 0 else 0.0
+
+
+def nms_indices(boxes: Sequence[Sequence[int]], scores: Sequence[float], threshold: float) -> List[int]:
+    order = sorted(range(len(boxes)), key=lambda index: scores[index], reverse=True)
+    kept: List[int] = []
+    for index in order:
+        if all(intersection_over_union(boxes[index], boxes[kept_index]) <= threshold for kept_index in kept):
+            kept.append(index)
+    return kept
 
 
 def start_cameras(devices: Sequence[RealSenseDevice], profile: Tuple[int, int, int]) -> List[CameraRuntime]:
@@ -309,7 +357,7 @@ def main() -> int:
     parser.add_argument("--color-profile", default="640,480,30", type=parse_profile, help="Color stream profile: width,height,fps.")
     parser.add_argument("--tile-size", default="640,360", type=parse_tile_size, help="Display tile size: width,height.")
     parser.add_argument("--weights", type=Path, default=default_person_model(), help="ONNX detector model. Default: weights/person_yolov5n.onnx.")
-    parser.add_argument("--no-detect", action="store_true", help="Disable OpenCV-DNN detection overlay.")
+    parser.add_argument("--no-detect", action="store_true", help="Disable ONNX Runtime detection overlay.")
     parser.add_argument("--detect-fps", type=float, default=15.0, help="Maximum detector FPS per camera; display still runs as fast as possible.")
     parser.add_argument("--input-size", type=int, default=640, help="Square detector input size.")
     parser.add_argument("--confidence-threshold", type=float, default=0.35)
@@ -338,12 +386,12 @@ def main() -> int:
     if args.list_only:
         return 0
 
-    detector: Optional[OpenCVDnnDetector] = None
+    detector: Optional[OnnxRuntimeDetector] = None
     if not args.no_detect:
         try:
-            detector = OpenCVDnnDetector(args.weights, args.input_size, args.confidence_threshold, args.nms_threshold, args.target_class_id)
+            detector = OnnxRuntimeDetector(args.weights, args.input_size, args.confidence_threshold, args.nms_threshold, args.target_class_id)
         except Exception as error:
-            print(f"[ERROR] Cannot load detector with OpenCV DNN: {error}", file=sys.stderr)
+            print(f"[ERROR] Cannot load detector with ONNX Runtime: {error}", file=sys.stderr)
             return 2
         print(f"[INFO] Detection enabled: weights={args.weights}, target_class_id={args.target_class_id}")
 
