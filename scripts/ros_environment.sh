@@ -51,4 +51,21 @@ source_ros_environment() {
   # shellcheck disable=SC1090
   source "$ros_setup"
   set -u
+
+  # An overlay may have been moved or cleaned since the parent shell was
+  # created. colcon warns for every stale entry, so retain only live prefixes.
+  local variable_name value prefix joined
+  local -a prefixes=()
+  for variable_name in AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH; do
+    value="${!variable_name:-}"
+    joined=""
+    prefixes=()
+    IFS=':' read -r -a prefixes <<< "$value"
+    for prefix in "${prefixes[@]}"; do
+      [[ -n "$prefix" && -d "$prefix" ]] || continue
+      joined="${joined:+$joined:}$prefix"
+    done
+    printf -v "$variable_name" '%s' "$joined"
+    export "$variable_name"
+  done
 }

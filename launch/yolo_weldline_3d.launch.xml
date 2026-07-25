@@ -1,10 +1,11 @@
 <launch>
-  <!-- Intel RealSense driver and C++ detector are deployed as one bringup. -->
+  <!-- RealSense, the RGB-D detector, and the scenario commander run as one bringup. -->
   <arg name="start_realsense" default="true"/>
   <arg name="camera_name" default="camera"/>
   <arg name="camera_serial_no" default=""/>
   <arg name="usb_port_id" default=""/>
   <arg name="params_file" default="$(find-pkg-share weldline_reflectivity_detector)/config/yolo_weldline_3d.yaml"/>
+  <arg name="scenario_file" default="$(find-pkg-share weldline_reflectivity_detector)/config/scenario.yaml"/>
   <arg name="weights" default="$(find-pkg-share weldline_reflectivity_detector)/weights/best.onnx"/>
   <arg name="color_topic" default="/camera/camera/color/image_raw"/>
   <arg name="depth_topic" default="/camera/camera/aligned_depth_to_color/image_raw"/>
@@ -12,6 +13,7 @@
   <arg name="output_frame" default="map"/>
   <arg name="processing_rate_hz" default="30.0"/>
   <arg name="target_class_id" default="-1"/>
+  <arg name="start_commander" default="true"/>
   <include file="$(find-pkg-share realsense2_camera)/launch/rs_launch.py" if="$(var start_realsense)">
     <arg name="camera_name" value="$(var camera_name)"/>
     <arg name="serial_no" value="$(var camera_serial_no)"/>
@@ -29,5 +31,10 @@
     <param name="output_frame" value="$(var output_frame)"/>
     <param name="processing_rate_hz" value="$(var processing_rate_hz)"/>
     <param name="target_class_id" value="$(var target_class_id)"/>
+  </node>
+  <node pkg="weldline_reflectivity_detector" exec="scenario_commander_node"
+        name="scenario_commander_node" output="screen" if="$(var start_commander)">
+    <param from="$(var params_file)"/>
+    <param name="scenario_file" value="$(var scenario_file)"/>
   </node>
 </launch>

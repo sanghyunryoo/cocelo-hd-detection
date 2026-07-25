@@ -1,0 +1,88 @@
+# Strict scenario schema, version 1.
+#
+# The first waypoint is locked from the weld-line detector only after several
+# spatially and angularly consistent /goal_pose samples. Every later waypoint is
+# predefined in `frame_id`. Replace the placeholder fixed coordinates after the
+# real route is surveyed.
+version: 1
+frame_id: "map"
+
+detector:
+  # Relative paths are resolved from this scenario file.
+  model: "../weights/best.onnx"
+  goal_topic: "/goal_pose"
+  stable_samples: 5
+  max_position_spread_m: 0.03
+  max_yaw_spread_deg: 0.75
+  max_goal_age_sec: 0.50
+
+control:
+  enabled: true
+  rate_hz: 20.0
+  command_topic: "/fsm_cmd"
+  status_topic: "/commander/scenario/status"
+  robot_frame: "base_link"
+
+  # Any missing, future, or stale pose/wall input produces `cmd 0 0 0`.
+  tf_timeout_sec: 0.05
+  max_tf_age_sec: 0.50
+  max_wall_age_sec: 0.75
+
+  # Holonomic P control. vx/vy are converted from map error into base_link axes.
+  position_kp: 0.60
+  max_linear_speed_mps: 0.20
+
+  # Wall correction remains active while translating. Above the motion gate,
+  # translation is stopped and only wz is emitted until alignment is restored.
+  wall_alignment_kp: 1.50
+  waypoint_yaw_kp: 1.20
+  max_angular_speed_rps: 0.45
+  wall_motion_gate_deg: 2.0
+
+  # At a waypoint, the configured yaw and measured wall direction must agree.
+  # A larger mismatch is treated as an unsafe scenario/geometry conflict.
+  yaw_wall_consistency_deg: 3.0
+
+waypoints:
+  - id: "detected_weldline"
+    source: "detector"
+    # parallel treats yaw and yaw+180deg as the same wall-aligned heading.
+    yaw_mode: "parallel"
+    position_tolerance_m: 0.04
+    yaw_tolerance_deg: 0.50
+    wall_tolerance_deg: 0.35
+    hold_time_sec: 1.0
+
+  # Placeholder route. These values must be replaced with surveyed map poses.
+  - id: "transfer_1"
+    source: "fixed"
+    x: 0.75
+    y: 0.00
+    yaw_deg: 0.0
+    yaw_mode: "parallel"
+    position_tolerance_m: 0.05
+    yaw_tolerance_deg: 0.50
+    wall_tolerance_deg: 0.35
+    hold_time_sec: 1.0
+
+  - id: "transfer_2"
+    source: "fixed"
+    x: 1.50
+    y: 0.00
+    yaw_deg: 0.0
+    yaw_mode: "parallel"
+    position_tolerance_m: 0.05
+    yaw_tolerance_deg: 0.50
+    wall_tolerance_deg: 0.35
+    hold_time_sec: 1.0
+
+  - id: "final_hold"
+    source: "fixed"
+    x: 2.00
+    y: 0.00
+    yaw_deg: 0.0
+    yaw_mode: "parallel"
+    position_tolerance_m: 0.04
+    yaw_tolerance_deg: 0.50
+    wall_tolerance_deg: 0.35
+    hold_time_sec: 1.5

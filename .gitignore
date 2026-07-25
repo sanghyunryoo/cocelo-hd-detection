@@ -1,6 +1,9 @@
+# Local build artifacts
 /build/
 /install/
 /log/
+
+# Release and local dependency artifacts
 /dist/
 /debian/
 /third_party/

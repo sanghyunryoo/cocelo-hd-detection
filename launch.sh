@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch the production C++ RGB-D detector.
+# Launch the integrated RealSense + RGB-D detector + scenario commander bringup.
 set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ros_launch_pid=""
@@ -33,7 +33,9 @@ if [[ -f "$script_dir/config/yolo_weldline_3d.yaml" ]]; then
   # Source-tree invocation: ./launch.sh
   project_dir="$script_dir"
   environment_helper="$script_dir/scripts/ros_environment.sh"
+  paths_helper="$script_dir/scripts/project_paths.sh"
   parameter_config="${WELDLINE_CONFIG:-$script_dir/config/yolo_weldline_3d.yaml}"
+  scenario_config="${WELDLINE_SCENARIO:-$script_dir/config/scenario.yaml}"
   source_tree_invocation=true
   weights_default="$project_dir/weights/best.onnx"
 else
@@ -41,6 +43,7 @@ else
   project_dir="$(cd "$script_dir/../.." && pwd)"
   environment_helper="$script_dir/ros_environment.sh"
   parameter_config="${WELDLINE_CONFIG:-$project_dir/share/weldline_reflectivity_detector/config/yolo_weldline_3d.yaml}"
+  scenario_config="${WELDLINE_SCENARIO:-$project_dir/share/weldline_reflectivity_detector/config/scenario.yaml}"
   source_tree_invocation=false
   weights_default="$project_dir/share/weldline_reflectivity_detector/weights/best.onnx"
 fi
@@ -53,6 +56,7 @@ read_deployment_value() {
     }' "$parameter_config"
 }
 [[ -f "$parameter_config" ]] || { echo "Parameter config not found: $parameter_config" >&2; exit 2; }
+[[ -f "$scenario_config" ]] || { echo "Scenario config not found: $scenario_config" >&2; exit 2; }
 configured_domain_id="$(read_deployment_value ros_domain_id)"
 configured_usb_port_id="$(read_deployment_value usb_port_id)"
 domain_id="${ROS_DOMAIN_ID:-$configured_domain_id}"
@@ -62,6 +66,7 @@ domain_id="${ROS_DOMAIN_ID:-$configured_domain_id}"
 export ROS_DOMAIN_ID="$domain_id"
 usb_port_id="${USB_PORT_ID:-$configured_usb_port_id}"
 start_realsense=true
+start_commander=true
 vis=false
 ros_launch_args=()
 for argument in "$@"; do
@@ -72,9 +77,17 @@ for argument in "$@"; do
     --no-vis)
       vis=false
       ;;
+    start_realsense:=true)
+      start_realsense=true
+      ;;
     start_realsense:=false)
       start_realsense=false
-      ros_launch_args+=("$argument")
+      ;;
+    start_commander:=true)
+      start_commander=true
+      ;;
+    start_commander:=false)
+      start_commander=false
       ;;
     *)
       ros_launch_args+=("$argument")
@@ -89,16 +102,29 @@ fi
 source "$environment_helper"
 source_ros_environment
 if [[ "$source_tree_invocation" == true ]]; then
-  if [[ ! -f "$project_dir/install/setup.bash" ]]; then "$project_dir/build.sh"; fi
+  # shellcheck disable=SC1090
+  source "$paths_helper"
+  resolve_project_paths "$project_dir"
+  installed_node="$colcon_install_base/weldline_reflectivity_detector/lib/weldline_reflectivity_detector/scenario_commander_node"
+  if [[ ! -x "$installed_node" ]]; then
+    "$project_dir/build.sh"
+  fi
   set +u
   # shellcheck disable=SC1091
-  source "$project_dir/install/setup.bash"
+  source "$colcon_install_base/setup.bash"
   set -u
 fi
 weights="${WEIGHTS:-$weights_default}"
+echo "Starting integrated bringup: RealSense=${start_realsense}, detector=true, commander=${start_commander}" >&2
 launch_command=(
   ros2 launch weldline_reflectivity_detector yolo_weldline_3d.launch.xml
-  params_file:="$parameter_config" weights:="$weights" usb_port_id:="$usb_port_id" "${ros_launch_args[@]}"
+  params_file:="$parameter_config"
+  scenario_file:="$scenario_config"
+  weights:="$weights"
+  usb_port_id:="$usb_port_id"
+  start_realsense:="$start_realsense"
+  start_commander:="$start_commander"
+  "${ros_launch_args[@]}"
 )
 if command -v setsid >/dev/null 2>&1; then
   setsid "${launch_command[@]}" &

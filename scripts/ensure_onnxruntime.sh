@@ -5,7 +5,15 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$(cd "$script_dir/.." && pwd)"
 version="${ONNXRUNTIME_VERSION:-1.18.1}"
-root="${ONNXRUNTIME_ROOT:-$project_dir/third_party/onnxruntime}"
+
+if [[ -z "${ONNXRUNTIME_CACHE_DIR:-}" ]]; then
+  # shellcheck disable=SC1091
+  source "$script_dir/project_paths.sh"
+  resolve_project_paths "$project_dir"
+fi
+
+cache_dir="${ONNXRUNTIME_CACHE_DIR:-$dependency_cache}"
+root="${ONNXRUNTIME_ROOT:-$cache_dir/onnxruntime}"
 
 if [[ -f "$root/include/onnxruntime_cxx_api.h" && -f "$root/lib/libonnxruntime.so" ]]; then
   echo "$root"
@@ -28,8 +36,8 @@ esac
 
 archive="onnxruntime-linux-${asset_arch}-${version}.tgz"
 url="https://github.com/microsoft/onnxruntime/releases/download/v${version}/${archive}"
-download_dir="$project_dir/third_party/downloads"
-mkdir -p "$download_dir" "$project_dir/third_party"
+download_dir="$cache_dir/downloads"
+mkdir -p "$download_dir" "$cache_dir"
 
 if [[ ! -f "$download_dir/$archive" ]]; then
   echo "Downloading ONNX Runtime ${version} for ${asset_arch}..." >&2

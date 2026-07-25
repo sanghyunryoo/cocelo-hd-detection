@@ -9,6 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
@@ -17,8 +18,35 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(yaml_cpp_vendor REQUIRED)
+find_package(yaml-cpp REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 
+# Scenario commander: map-based wall detection and link alignment.
+add_library(wall_alignment STATIC src/wall_alignment.cpp)
+target_include_directories(wall_alignment PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_compile_options(wall_alignment PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+
+add_library(scenario_planner STATIC src/scenario_planner.cpp)
+target_include_directories(scenario_planner PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_compile_options(scenario_planner PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+target_link_libraries(scenario_planner PUBLIC yaml-cpp)
+
+add_executable(scenario_commander_node
+  src/scenario_commander_node.cpp
+  src/scenario_drive.cpp)
+target_include_directories(scenario_commander_node PRIVATE include)
+target_compile_options(scenario_commander_node PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+target_link_libraries(scenario_commander_node wall_alignment scenario_planner)
+ament_target_dependencies(scenario_commander_node
+  rclcpp std_msgs sensor_msgs geometry_msgs visualization_msgs
+  tf2 tf2_ros tf2_geometry_msgs)
+
+# RGB-D detector: ONNX inference and 3D weld-line localization.
 set(WELDLINE_DEFAULT_ONNX_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/weights/best.onnx")
 if(DEFINED ENV{WELDLINE_ONNX_MODEL})
   set(WELDLINE_DEFAULT_ONNX_MODEL "$ENV{WELDLINE_ONNX_MODEL}")
@@ -71,13 +99,29 @@ if(WELDLINE_VALIDATE_ONNX)
   add_dependencies(yolo_weldline_3d_node validate_weldline_onnx)
 endif()
 
-install(TARGETS yolo_weldline_3d_node DESTINATION lib/${PROJECT_NAME})
+install(TARGETS yolo_weldline_3d_node scenario_commander_node DESTINATION lib/${PROJECT_NAME})
 install(FILES ${ONNXRUNTIME_RUNTIME_LIBS} DESTINATION lib/${PROJECT_NAME})
-install(FILES launch/yolo_weldline_3d.launch.xml DESTINATION share/${PROJECT_NAME}/launch)
-install(FILES config/yolo_weldline_3d.yaml DESTINATION share/${PROJECT_NAME}/config)
+install(FILES launch/yolo_weldline_3d.launch.xml launch/scenario_commander.launch.xml
+  DESTINATION share/${PROJECT_NAME}/launch)
+install(FILES config/yolo_weldline_3d.yaml config/scenario.yaml
+  DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY weights DESTINATION share/${PROJECT_NAME} OPTIONAL FILES_MATCHING PATTERN "*.onnx")
-install(PROGRAMS launch.sh scripts/ros_environment.sh scripts/realsense_visualize.py scripts/annotated_image_viewer.py
+install(PROGRAMS launch.sh scripts/ros_environment.sh scripts/realsense_visualize.py
+  scripts/annotated_image_viewer.py
   DESTINATION lib/${PROJECT_NAME})
 install(FILES package.xml DESTINATION share/${PROJECT_NAME})
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_wall_alignment test/test_wall_alignment.cpp)
+  target_link_libraries(test_wall_alignment wall_alignment)
+  target_compile_options(test_wall_alignment PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+
+  ament_add_gtest(test_scenario_planner test/test_scenario_planner.cpp)
+  target_link_libraries(test_scenario_planner scenario_planner)
+  target_compile_options(test_scenario_planner PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+  target_compile_definitions(test_scenario_planner PRIVATE
+    TEST_SCENARIO_FILE="${CMAKE_CURRENT_SOURCE_DIR}/config/scenario.yaml")
+endif()
 
 ament_package()
