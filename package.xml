@@ -17,7 +17,7 @@
   <depend>cv_bridge</depend>
   <depend>image_transport</depend>
   <depend>opencv</depend>
-  <!-- Runtime dependency: bloom converts this to ros-${ROS_DISTRO}-realsense2-camera. -->
+  <!-- Runtime dependency: native deb packaging maps this to ros-${ROS_DISTRO}-realsense2-camera. -->
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>ros2launch</exec_depend>
   <export><build_type>ament_cmake</build_type></export>

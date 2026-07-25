@@ -24,6 +24,7 @@ Coordinates are transformed through TF2 into `output_frame` (default `map`) befo
 source /opt/ros/<your_ros_distro>/setup.bash  # optional if exactly one ROS 2 distro is installed
 ./build.sh
 ./launch.sh
+./launch.sh --vis
 ```
 
 Before the first launch, set a unique DDS domain and the physical RealSense USB topology in [config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml). `usb_port_id` is deliberately required when the integrated driver starts, preventing an arbitrary camera from being selected on multi-camera systems.
@@ -61,6 +62,8 @@ For an externally managed RealSense driver, keep the detector only:
 ./launch.sh start_realsense:=false
 ```
 
+Use `--vis` to show `/weldline_yolo/debug/annotated_image` in an OpenCV window while the detector is running. The viewer also subscribes to `/weldline_yolo/debug/center_point` and overlays the latest 3D coordinate at the top of the image. Override viewer topics with `WELDLINE_VIS_IMAGE_TOPIC` and `WELDLINE_VIS_POINT_TOPIC` when needed.
+
 ## RealSense diagnostics and visualization
 
 The Python visualizer is separate from the production C++ detector and intentionally has no ROS 2 dependency. Run it before `./launch.sh` when you need to decide which physical RealSense should be assigned to `usb_port_id` in `yolo_weldline_3d.yaml`.
@@ -85,12 +88,20 @@ ROS 2 parameters are in [config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.y
 Run the package build on the target architecture:
 
 ```bash
-./scripts/build_deb.sh
+./scripts/package_deb.sh
 ```
 
-The script reads both the ROS distribution and Debian architecture from the current machine, accepts `amd64`, `arm64`, or `armhf`, builds with `colcon`, stages the resulting ROS package under `/opt/ros/${ROS_DISTRO}`, and creates the `.deb` with `dpkg-deb`. The filename explicitly identifies its compatibility target, for example `weldline_detector_1.0.0_ros-humble_amd64.deb` or `weldline_detector_1.0.0_ros-jazzy_arm64.deb`; a paired `.build-info` file records the same values.
+The script reads both the ROS distribution and Debian architecture from the current machine, accepts `amd64` or `arm64`, builds with `colcon`, stages the resulting ROS package under `/opt/cocelo/weldline-detector/install`, and creates the `.deb` with `dpkg-deb`. The filename explicitly identifies its compatibility target, for example `cocelo-weldline-detector_1.0.0-1+humble22.04_amd64.deb` or `cocelo-weldline-detector_1.0.0-1+jazzy24.04_arm64.deb`; a paired `.build-info` file records the same values.
 
-This native package path does not require `bloom`. The package declares only the direct ROS runtime dependencies, the official `ros-${ROS_DISTRO}-realsense2-camera` driver dependency, `ros-${ROS_DISTRO}-ros2launch`, and the detected OpenCV runtime libraries. Required build tooling is the selected ROS distribution, `colcon`, a C++ compiler, and ordinary package build dependencies already needed by `./build.sh`.
+This native package path does not require `bloom`. The package assumes ROS 2 is already installed at `/opt/ros/${ROS_DISTRO}`, bundles the detector-specific runtime tree and ONNX Runtime shared library, and declares the official `ros-${ROS_DISTRO}-realsense2-camera` driver dependency. After installation:
+
+```bash
+sudo apt install ./dist/cocelo-weldline-detector_<version>_<arch>.deb
+weldline-detector-visualize --no-detect
+sudoedit /etc/cocelo/weldline-detector/yolo_weldline_3d.yaml
+weldline-detector --vis
+weldline-detector-doctor
+```
 
 ## Deployment notes
 

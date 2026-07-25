@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
-# Launch the production C++ RGB-D detector.  Override ROS launch arguments after --.
+# Launch the production C++ RGB-D detector.
 set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ros_launch_pid=""
+vis_pid=""
 terminate_ros_launch() {
   local exit_code="${1:-130}"
   trap - INT TERM
+  if [[ -n "$vis_pid" ]] && kill -0 "$vis_pid" 2>/dev/null; then
+    echo "Stopping weldline debug viewer..." >&2
+    kill -TERM -- "-$vis_pid" 2>/dev/null || kill -TERM "$vis_pid" 2>/dev/null || true
+    sleep 0.1
+    if kill -0 "$vis_pid" 2>/dev/null; then
+      kill -KILL -- "-$vis_pid" 2>/dev/null || kill -KILL "$vis_pid" 2>/dev/null || true
+    fi
+    wait "$vis_pid" 2>/dev/null || true
+  fi
   if [[ -n "$ros_launch_pid" ]] && kill -0 "$ros_launch_pid" 2>/dev/null; then
     echo "Stopping ROS launch process group immediately..." >&2
     kill -TERM -- "-$ros_launch_pid" 2>/dev/null || kill -TERM "$ros_launch_pid" 2>/dev/null || true
@@ -23,14 +33,14 @@ if [[ -f "$script_dir/config/yolo_weldline_3d.yaml" ]]; then
   # Source-tree invocation: ./launch.sh
   project_dir="$script_dir"
   environment_helper="$script_dir/scripts/ros_environment.sh"
-  parameter_config="$script_dir/config/yolo_weldline_3d.yaml"
+  parameter_config="${WELDLINE_CONFIG:-$script_dir/config/yolo_weldline_3d.yaml}"
   source_tree_invocation=true
   weights_default="$project_dir/weights/best.onnx"
 else
   # Installed Debian invocation: ros2 run weldline_reflectivity_detector launch.sh
   project_dir="$(cd "$script_dir/../.." && pwd)"
   environment_helper="$script_dir/ros_environment.sh"
-  parameter_config="$project_dir/share/weldline_reflectivity_detector/config/yolo_weldline_3d.yaml"
+  parameter_config="${WELDLINE_CONFIG:-$project_dir/share/weldline_reflectivity_detector/config/yolo_weldline_3d.yaml}"
   source_tree_invocation=false
   weights_default="$project_dir/share/weldline_reflectivity_detector/weights/best.onnx"
 fi
@@ -52,8 +62,24 @@ domain_id="${ROS_DOMAIN_ID:-$configured_domain_id}"
 export ROS_DOMAIN_ID="$domain_id"
 usb_port_id="${USB_PORT_ID:-$configured_usb_port_id}"
 start_realsense=true
+vis=false
+ros_launch_args=()
 for argument in "$@"; do
-  [[ "$argument" == "start_realsense:=false" ]] && start_realsense=false
+  case "$argument" in
+    --vis)
+      vis=true
+      ;;
+    --no-vis)
+      vis=false
+      ;;
+    start_realsense:=false)
+      start_realsense=false
+      ros_launch_args+=("$argument")
+      ;;
+    *)
+      ros_launch_args+=("$argument")
+      ;;
+  esac
 done
 if [[ "$start_realsense" == true && -z "$usb_port_id" ]]; then
   echo "usb_port_id is required when starting RealSense. Set it in config/yolo_weldline_3d.yaml or USB_PORT_ID." >&2
@@ -72,7 +98,7 @@ fi
 weights="${WEIGHTS:-$weights_default}"
 launch_command=(
   ros2 launch weldline_reflectivity_detector yolo_weldline_3d.launch.xml
-  weights:="$weights" usb_port_id:="$usb_port_id" "$@"
+  params_file:="$parameter_config" weights:="$weights" usb_port_id:="$usb_port_id" "${ros_launch_args[@]}"
 )
 if command -v setsid >/dev/null 2>&1; then
   setsid "${launch_command[@]}" &
@@ -80,9 +106,31 @@ else
   "${launch_command[@]}" &
 fi
 ros_launch_pid="$!"
+if [[ "$vis" == true ]]; then
+  annotated_topic="${WELDLINE_VIS_IMAGE_TOPIC:-$(read_deployment_value annotated_topic)}"
+  point_topic="${WELDLINE_VIS_POINT_TOPIC:-$(read_deployment_value debug_point_topic)}"
+  annotated_topic="${annotated_topic:-/weldline_yolo/debug/annotated_image}"
+  point_topic="${point_topic:-/weldline_yolo/debug/center_point}"
+  if [[ "$source_tree_invocation" == true ]]; then
+    viewer_script="$project_dir/scripts/annotated_image_viewer.py"
+  else
+    viewer_script="$project_dir/lib/weldline_reflectivity_detector/annotated_image_viewer.py"
+  fi
+  vis_command=(python3 "$viewer_script" --image-topic "$annotated_topic" --point-topic "$point_topic" --max-fps "${WELDLINE_VIS_FPS:-30}")
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "${vis_command[@]}" &
+  else
+    "${vis_command[@]}" &
+  fi
+  vis_pid="$!"
+fi
 set +e
 wait "$ros_launch_pid"
 launch_status="$?"
 set -e
 ros_launch_pid=""
+if [[ -n "$vis_pid" ]] && kill -0 "$vis_pid" 2>/dev/null; then
+  kill -TERM -- "-$vis_pid" 2>/dev/null || kill -TERM "$vis_pid" 2>/dev/null || true
+  wait "$vis_pid" 2>/dev/null || true
+fi
 exit "$launch_status"
