@@ -400,12 +400,14 @@ EOF
 cat > "${STAGE_ROOT}/DEBIAN/postinst" <<'EOF'
 #!/usr/bin/env bash
 set -e
+echo
 echo "cocelo-weldline-detector installed."
 echo "Edit config: /etc/cocelo/weldline-detector/yolo_weldline_3d.yaml"
 echo "Pick RealSense USB port: weldline-detector-visualize --no-detect"
 echo "Run: weldline-detector"
 echo "Run with debug image viewer: weldline-detector --vis"
 echo "Check: weldline-detector-doctor"
+echo
 EOF
 chmod 0755 "${STAGE_ROOT}/DEBIAN/postinst"
 
@@ -440,9 +442,33 @@ dpkg-deb --build --root-owner-group "${STAGE_ROOT}" "${DEB_PATH}"
 echo
 echo "Created: ${DEB_PATH}"
 echo
-echo "Install on target ${ARCH} system:"
-echo "  sudo apt install ./$(basename "${DEB_PATH}")"
-echo "  weldline-detector-visualize --no-detect"
-echo "  weldline-detector --vis"
-echo
-echo "Runtime assumption: ROS 2 ${ROS_DISTRO_NAME} is pre-installed at /opt/ros/${ROS_DISTRO_NAME}."
+cat <<EOF
+Install on target ${ARCH} system:
+  cd "$(cd "${OUTPUT_DIR}" && pwd)"
+  sudo apt install ./$(basename "${DEB_PATH}")
+
+Runtime config:
+  sudoedit /etc/cocelo/weldline-detector/yolo_weldline_3d.yaml
+
+Pick the RealSense USB port before running detection:
+  weldline-detector-visualize --no-detect
+
+Run detection:
+  weldline-detector
+
+Run detection with annotated image + 3D XYZ viewer:
+  weldline-detector --vis
+
+Check installation / topics / RealSense visibility:
+  weldline-detector-doctor
+
+Packaged runtime:
+  install tree: /opt/cocelo/weldline-detector/install
+  config:       /etc/cocelo/weldline-detector/yolo_weldline_3d.yaml
+  docs:         /usr/share/doc/${PACKAGE_NAME}/
+
+Runtime assumption:
+  ROS 2 ${ROS_DISTRO_NAME} is pre-installed at /opt/ros/${ROS_DISTRO_NAME}.
+  The package depends on ros-${ROS_DISTRO_NAME}-realsense2-camera and ros-${ROS_DISTRO_NAME}-ros2launch.
+  For the USB visualizer, pyrealsense2 must be available on the target Python.
+EOF
