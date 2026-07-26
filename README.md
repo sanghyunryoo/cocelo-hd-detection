@@ -104,6 +104,29 @@ ros2 topic echo /commander/wall_alignment/angle_deg
 The commander-only launch still waits for the detector waypoint and publishes
 zero velocity until a fresh, stable `/goal_pose` is received.
 
+## HD-sim RL waypoint control
+
+`HD-sim`'s RL worker accepts `cmd vx vy wz` on `/fsm_cmd`; it forwards the
+three values to its velocity-command observation. Start the simulator from the
+`HD-sim` GUI, then in another terminal source the same ROS distribution and
+domain and run:
+
+```bash
+source /opt/ros/foxy/setup.bash
+source /home/sanghyunryoo/Documents/pr/HD-sim/ros2_ws/install/setup.bash
+source ~/.cache/cocelo/weldline-reflectivity-detector/install/setup.bash
+export ROS_DOMAIN_ID=<HD-sim GUI domain>
+ros2 launch weldline_reflectivity_detector scenario_commander_sim.launch.xml
+```
+
+The simulator launch publishes `RL` on `/fsm_cmd` for the first two seconds to
+activate the OZZ control manager, then sends waypoint commands. It uses
+`/odom_gt` as the pose source and drives `wz` from the signed difference between
+the robot yaw and `wall_heading_deg` (default `0`, a wall parallel to world X).
+Set `wall_heading_deg` to the actual wall tangent if the simulated wall is not
+parallel to world X. The first detector waypoint is replaced by the initial
+simulator pose; subsequent fixed waypoints in `scenario.yaml` are followed.
+
 ## Runtime contract
 
 The node uses synchronized RGB, aligned depth, and camera intrinsics as an input bundle. A bounded latest-frame buffer is processed by a 30 Hz timer, preventing a slow inference cycle from accumulating camera latency.

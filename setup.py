@@ -11,6 +11,7 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/launch", [
             "launch/yolo_weldline_3d.launch.xml", "launch/scenario_commander.launch.xml",
+            "launch/scenario_commander_sim.launch.xml",
         ]),
         ("share/" + package_name + "/config", [
             "config/yolo_weldline_3d.yaml", "config/scenario.yaml",

@@ -1,0 +1,14 @@
+<launch>
+  <arg name="params_file"
+       default="$(find-pkg-share weldline_reflectivity_detector)/config/yolo_weldline_3d.yaml"/>
+  <arg name="scenario_file"
+       default="$(find-pkg-share weldline_reflectivity_detector)/config/scenario.yaml"/>
+  <arg name="wall_heading_deg" default="0.0"/>
+  <node pkg="weldline_reflectivity_detector" exec="scenario_commander_node"
+        name="scenario_commander_node" output="screen">
+    <param from="$(var params_file)"/>
+    <param name="scenario_file" value="$(var scenario_file)"/>
+    <param name="simulator_mode" value="true"/>
+    <param name="simulator_wall_heading_deg" value="$(var wall_heading_deg)"/>
+  </node>
+</launch>

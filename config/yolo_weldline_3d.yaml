@@ -25,9 +25,6 @@ yolo_weldline_3d_node:
 
 scenario_commander_node:
   ros__parameters:
-    # launch files override this with the installed/source scenario.yaml path.
-    scenario_file: ""
-
     # Refined POINT_LIO global map. The subscriber matches its reliable,
     # transient-local QoS so a cached map is received even after late startup.
     global_map_topic: "/point_lio/global_map_refined"

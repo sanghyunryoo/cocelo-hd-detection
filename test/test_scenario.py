@@ -1,7 +1,7 @@
 from math import pi
 from pathlib import Path
 
-from weldline_reflectivity_detector.scenario import Pose2D, ScenarioPlanner, format_fsm_command, load_scenario
+from weldline_reflectivity_detector.scenario import Pose2D, ScenarioPlanner, format_fsm_command, load_scenario, wall_heading_error
 from weldline_reflectivity_detector.wall_alignment import Point2D, WallConfig, estimate_wall
 
 
@@ -24,3 +24,16 @@ def test_wall_fit_recovers_parallel_angle():
     estimate = estimate_wall(points, WallConfig(min_inliers=10, min_length=1.0), None)
     assert estimate is not None
     assert abs(estimate.angle) < 1e-6
+
+
+def test_simulator_wall_error_is_zero_when_parallel():
+    assert wall_heading_error(0.0, 0.0) == 0.0
+    assert abs(wall_heading_error(3.0 * pi / 4.0, -pi / 4.0)) < 1e-9
+
+
+def test_wall_error_commands_rotation_toward_parallel():
+    planner = ScenarioPlanner(load_scenario(str(Path(__file__).parents[1] / "config/scenario.yaml")))
+    planner.set_detector_waypoint(Pose2D(1.0, 0.0, 0.0))
+    output = planner.update(Pose2D(0.0, 0.0, 0.1), wall_heading_error(0.1, 0.0), 0.0)
+    assert output.state == "ALIGNING_WALL"
+    assert output.wz < 0.0

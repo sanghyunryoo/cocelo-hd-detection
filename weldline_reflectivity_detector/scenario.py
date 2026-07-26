@@ -18,6 +18,11 @@ def normalize_parallel_angle(angle: float) -> float:
     return angle - pi if angle >= pi / 2 else angle + pi if angle < -pi / 2 else angle
 
 
+def wall_heading_error(robot_yaw: float, wall_heading: float) -> float:
+    """Signed robot-to-wall tangent error; zero means parallel to the wall."""
+    return normalize_parallel_angle(wall_heading - robot_yaw)
+
+
 @dataclass
 class Pose2D:
     x: float = 0.0

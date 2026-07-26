@@ -7,16 +7,18 @@ from time import monotonic
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, Vector3Stamped
+from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Bool, Float64, String
 from tf2_ros import Buffer, TransformListener, TransformException
 from visualization_msgs.msg import Marker, MarkerArray
 
 from .point_cloud_xyz import decode_point_cloud_xyz
-from .scenario import Pose2D, ScenarioPlanner, format_fsm_command, load_scenario, normalize_angle, normalize_parallel_angle
+from .scenario import Pose2D, ScenarioPlanner, format_fsm_command, load_scenario, normalize_angle, normalize_parallel_angle, wall_heading_error
 from .wall_alignment import Point2D, WallConfig, estimate_wall
 
 
@@ -48,6 +50,10 @@ class ScenarioCommanderNode(Node):
         self.min_voxel_points = int(self.declare_parameter("wall_minimum_voxel_points", 3).value)
         self.stride = int(self.declare_parameter("wall_point_stride", 1).value)
         self.smoothing = float(self.declare_parameter("wall_angle_smoothing_alpha", 1.0).value)
+        self.simulator_mode = bool(self.declare_parameter("simulator_mode", False).value)
+        self.simulator_odom_topic = self.declare_parameter("simulator_odom_topic", "/odom_gt").value
+        self.simulator_wall_heading = float(self.declare_parameter("simulator_wall_heading_deg", 0.0).value) * 0.017453292519943295
+        self.simulator_skip_detector = bool(self.declare_parameter("simulator_skip_detector_waypoint", True).value)
         self.wall_config = WallConfig(
             float(self.declare_parameter("wall_ransac_distance_threshold", 0.04).value), int(self.declare_parameter("wall_ransac_iterations", 300).value), int(self.declare_parameter("wall_max_candidates", 6).value), int(self.declare_parameter("wall_minimum_inliers", 30).value), float(self.declare_parameter("wall_minimum_length", 0.8).value), float(self.declare_parameter("wall_max_fit_rmse", 0.04).value), self.declare_parameter("wall_selection", "tracked").value, self.declare_parameter("wall_sector", "any").value, float(self.declare_parameter("wall_sector_half_angle_deg", 70.0).value) * 0.017453292519943295, float(self.declare_parameter("wall_tracking_max_angle_deg", 20.0).value) * 0.017453292519943295)
         self.buffer, self.listener, self.cached_map, self.tracked_angle, self.filtered_angle = Buffer(), None, None, None, None
@@ -59,6 +65,9 @@ class ScenarioCommanderNode(Node):
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(PointCloud2, self.map_topic, self.on_map, qos)
         self.create_timer(1.0 / self.rate, self.process_wall)
+        self.simulator_pose = None
+        self.rl_enable_deadline = monotonic() + 2.0
+        if self.simulator_mode: self.create_subscription(Odometry, self.simulator_odom_topic, self.on_simulator_odom, qos_profile_sensor_data)
         self.load_control()
 
     def load_control(self) -> None:
@@ -76,6 +85,13 @@ class ScenarioCommanderNode(Node):
             self.cached_map = (message.header, decode_point_cloud_xyz(message, self.stride))
             self.get_logger().info(f"Cached global map: {len(self.cached_map[1])} finite points")
         except ValueError as error: self.get_logger().error(f"Rejected global map: {error}")
+
+    def on_simulator_odom(self, message: Odometry) -> None:
+        pose = message.pose.pose
+        self.simulator_pose = Pose2D(pose.position.x, pose.position.y, _yaw(pose.orientation))
+        if self.simulator_skip_detector and not self.planner.detector_resolved:
+            self.planner.set_detector_waypoint(self.simulator_pose)
+            self.get_logger().info("Simulator mode locked the detector waypoint at the initial /odom_gt pose")
 
     def on_goal(self, message: PoseStamped) -> None:
         if self.planner.detector_resolved or not message.header.frame_id: return
@@ -119,13 +135,20 @@ class ScenarioCommanderNode(Node):
         self.tracked_angle = self.filtered_angle = None; self.valid_pub.publish(Bool(data=False)); self.angle_pub.publish(Float64(data=float("nan")))
 
     def robot_pose(self):
+        if self.simulator_mode: return self.simulator_pose
         scenario = self.planner.scenario
         try: transform = self.buffer.lookup_transform(scenario.frame_id, scenario.control.robot_frame, rclpy.time.Time(), timeout=Duration(seconds=scenario.control.tf_timeout))
         except TransformException: return None
         return Pose2D(transform.transform.translation.x, transform.transform.translation.y, _yaw(transform.transform.rotation))
 
     def process_control(self) -> None:
-        output = self.planner.update(self.robot_pose(), self.filtered_angle, monotonic())
+        now, pose = monotonic(), self.robot_pose()
+        if self.simulator_mode and now < self.rl_enable_deadline:
+            self.command_pub.publish(String(data="RL"))
+            self.command_pub.publish(String(data=format_fsm_command(0.0, 0.0, 0.0)))
+            return
+        wall_error = wall_heading_error(pose.yaw, self.simulator_wall_heading) if self.simulator_mode and pose else self.filtered_angle
+        output = self.planner.update(pose, wall_error, now)
         self.command_pub.publish(String(data=format_fsm_command(output.vx, output.vy, output.wz)))
         self.status_pub.publish(String(data=f"{output.state}: {output.detail}"))
 
@@ -133,4 +156,5 @@ class ScenarioCommanderNode(Node):
 def main() -> None:
     rclpy.init(); node = ScenarioCommanderNode()
     try: rclpy.spin(node)
+    except KeyboardInterrupt: pass
     finally: node.destroy_node(); rclpy.shutdown()
