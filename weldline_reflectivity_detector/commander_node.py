@@ -55,10 +55,11 @@ class ScenarioCommanderNode(Node):
         self.simulator_wall_heading = float(self.declare_parameter("simulator_wall_heading_deg", 0.0).value) * 0.017453292519943295
         self.simulator_skip_detector = bool(self.declare_parameter("simulator_skip_detector_waypoint", True).value)
         self.wall_config = WallConfig(
-            float(self.declare_parameter("wall_ransac_distance_threshold", 0.04).value), int(self.declare_parameter("wall_ransac_iterations", 300).value), int(self.declare_parameter("wall_max_candidates", 6).value), int(self.declare_parameter("wall_minimum_inliers", 30).value), float(self.declare_parameter("wall_minimum_length", 0.8).value), float(self.declare_parameter("wall_max_fit_rmse", 0.04).value), self.declare_parameter("wall_selection", "tracked").value, self.declare_parameter("wall_sector", "any").value, float(self.declare_parameter("wall_sector_half_angle_deg", 70.0).value) * 0.017453292519943295, float(self.declare_parameter("wall_tracking_max_angle_deg", 20.0).value) * 0.017453292519943295)
+            float(self.declare_parameter("wall_ransac_distance_threshold", 0.04).value), int(self.declare_parameter("wall_ransac_iterations", 300).value), int(self.declare_parameter("wall_max_candidates", 6).value), int(self.declare_parameter("wall_minimum_inliers", 30).value), float(self.declare_parameter("wall_minimum_length", 0.8).value), float(self.declare_parameter("wall_max_fit_rmse", 0.04).value), self.declare_parameter("wall_selection", "tracked").value, self.declare_parameter("wall_sector", "front").value, float(self.declare_parameter("wall_sector_half_angle_deg", 70.0).value) * 0.017453292519943295, float(self.declare_parameter("wall_tracking_max_angle_deg", 20.0).value) * 0.017453292519943295)
         self.buffer, self.listener, self.cached_map, self.tracked_angle, self.filtered_angle = Buffer(), None, None, None, None
         self.listener = TransformListener(self.buffer, self)
         self.angle_pub = self.create_publisher(Float64, self.declare_parameter("wall_angle_topic", "/commander/wall_alignment/angle_deg").value, 10)
+        self.distance_pub = self.create_publisher(Float64, self.declare_parameter("wall_distance_topic", "/commander/wall_alignment/distance_m").value, 10)
         self.valid_pub = self.create_publisher(Bool, self.declare_parameter("wall_valid_topic", "/commander/wall_alignment/valid").value, 10)
         self.metrics_pub = self.create_publisher(Vector3Stamped, self.declare_parameter("wall_metrics_topic", "/commander/wall_alignment/metrics").value, 10)
         self.markers_pub = self.create_publisher(MarkerArray, self.declare_parameter("wall_marker_topic", "/commander/wall_alignment/markers").value, 5)
@@ -129,10 +130,10 @@ class ScenarioCommanderNode(Node):
         if estimate is None: return self.publish_invalid()
         angle = estimate.angle if self.filtered_angle is None else normalize_parallel_angle(self.filtered_angle + self.smoothing * normalize_parallel_angle(estimate.angle - self.filtered_angle))
         self.tracked_angle = self.filtered_angle = angle
-        self.valid_pub.publish(Bool(data=True)); self.angle_pub.publish(Float64(data=angle * 57.295779513)); metrics = Vector3Stamped(); metrics.header.frame_id = self.reference_link; metrics.header.stamp = self.get_clock().now().to_msg(); metrics.vector.x, metrics.vector.y, metrics.vector.z = angle * 57.295779513, estimate.distance, estimate.rmse; self.metrics_pub.publish(metrics)
+        self.valid_pub.publish(Bool(data=True)); self.angle_pub.publish(Float64(data=angle * 57.295779513)); self.distance_pub.publish(Float64(data=estimate.distance)); metrics = Vector3Stamped(); metrics.header.frame_id = self.reference_link; metrics.header.stamp = self.get_clock().now().to_msg(); metrics.vector.x, metrics.vector.y, metrics.vector.z = angle * 57.295779513, estimate.distance, estimate.rmse; self.metrics_pub.publish(metrics)
 
     def publish_invalid(self) -> None:
-        self.tracked_angle = self.filtered_angle = None; self.valid_pub.publish(Bool(data=False)); self.angle_pub.publish(Float64(data=float("nan")))
+        self.tracked_angle = self.filtered_angle = None; self.valid_pub.publish(Bool(data=False)); self.angle_pub.publish(Float64(data=float("nan"))); self.distance_pub.publish(Float64(data=float("nan")))
 
     def robot_pose(self):
         if self.simulator_mode: return self.simulator_pose

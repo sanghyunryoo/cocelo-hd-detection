@@ -26,6 +26,11 @@ def test_wall_fit_recovers_parallel_angle():
     assert abs(estimate.angle) < 1e-6
 
 
+def test_front_sector_rejects_a_wall_behind_the_robot():
+    points = [Point2D(float(index) / 10.0 - 4.0, 1.0) for index in range(-20, 21)]
+    assert estimate_wall(points, WallConfig(min_inliers=10, min_length=1.0, sector="front")) is None
+
+
 def test_simulator_wall_error_is_zero_when_parallel():
     assert wall_heading_error(0.0, 0.0) == 0.0
     assert abs(wall_heading_error(3.0 * pi / 4.0, -pi / 4.0)) < 1e-9

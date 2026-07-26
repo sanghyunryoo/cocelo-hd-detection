@@ -72,6 +72,7 @@ receives the cached map. The topic and all fitting parameters are editable under
 | --- | --- | --- | --- |
 | Refined map input | `sensor_msgs/PointCloud2` | `/point_lio/global_map_refined` | Cached global XYZ map |
 | Angle output | `std_msgs/Float64` | `/commander/wall_alignment/angle_deg` | Signed link-to-wall tangent error in degrees |
+| Distance output | `std_msgs/Float64` | `/commander/wall_alignment/distance_m` | Distance from the robot origin to the selected front wall in metres |
 | Valid output | `std_msgs/Bool` | `/commander/wall_alignment/valid` | Whether the current estimate passed all checks |
 | Metrics output | `geometry_msgs/Vector3Stamped` | `/commander/wall_alignment/metrics` | `x=angle_deg`, `y=distance_m`, `z=fit_rmse_m` |
 | Debug markers | `visualization_msgs/MarkerArray` | `/commander/wall_alignment/markers` | Selected wall, nearest point, and fit values |
@@ -86,8 +87,8 @@ Nearby map points are cropped using the latest map-to-link TF, grouped into XY
 voxels, and required to show configurable vertical extent. This suppresses floor
 and ceiling returns. Multiple wall hypotheses are extracted with RANSAC and
 refined over all inliers using total least squares (PCA); length, inlier count, and
-fit RMSE gates reject clutter. `wall_sector` can restrict selection to `any`,
-`front`, `rear`, `left`, or `right`. The default `tracked` selection initially
+fit RMSE gates reject clutter. `wall_sector` is configured as `front`, so only
+the wall in the robot +X direction is used for alignment. The default `tracked` selection initially
 ranks candidates by inlier count times observed length, then maintains angular
 continuity with that wall. `wall_tracking_max_angle_deg` limits association jumps.
 Use `strongest` for stateless selection or `nearest` only when proximity is the

@@ -62,9 +62,9 @@ scenario_commander_node:
 
     # selection: tracked | strongest | nearest. "tracked" initially chooses the
     # strongest wall, then keeps the angularly continuous candidate.
-    # sector: any | front | rear | left | right
+    # Use only the wall in the robot's forward (+X) sector.
     wall_selection: "tracked"
-    wall_sector: "any"
+    wall_sector: "front"
     wall_sector_half_angle_deg: 70.0
     wall_tracking_max_angle_deg: 20.0
 
@@ -72,6 +72,7 @@ scenario_commander_node:
     wall_angle_smoothing_alpha: 1.0
 
     wall_angle_topic: "/commander/wall_alignment/angle_deg"
+    wall_distance_topic: "/commander/wall_alignment/distance_m"
     wall_valid_topic: "/commander/wall_alignment/valid"
     # Vector3Stamped fields: x=angle_deg, y=wall_distance_m, z=fit_rmse_m.
     wall_metrics_topic: "/commander/wall_alignment/metrics"
