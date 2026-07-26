@@ -6,5 +6,4 @@ resolve_project_paths() {
   colcon_build_base="${COCELO_BUILD_BASE:-$artifact_root/build}"
   colcon_install_base="${COCELO_INSTALL_BASE:-$artifact_root/install}"
   colcon_log_base="${COCELO_LOG_BASE:-$artifact_root/log}"
-  dependency_cache="${ONNXRUNTIME_CACHE_DIR:-$artifact_root/third_party}"
 }

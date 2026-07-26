@@ -1,4 +1,4 @@
-# Scenario Commander + Weldline 3D Localization (ROS 2 / C++)
+# Scenario Commander + Weldline 3D Localization (ROS 2 / Python)
 
 This package now contains the scenario commander's wall-alignment foundation in
 addition to the RGB-D detector. `scenario_commander_node` consumes the refined
@@ -6,9 +6,9 @@ POINT_LIO global map, estimates nearby walls in the robot-link frame, and
 continuously publishes the signed link-to-wall angular error required for precise
 parallel alignment.
 
-The detector remains a native C++17 ROS 2 node using ONNX Runtime for ONNX inference
-and OpenCV only for image processing. The integrated bringup launches RealSense,
-the detector, and the commander.
+The detector and commander are Python ROS 2 nodes. The detector uses Python ONNX
+Runtime for inference and OpenCV for image processing. The integrated bringup
+launches RealSense, the detector, and the commander.
 
 ## Scenario waypoint drive contract
 
@@ -136,13 +136,12 @@ package. `build.sh` keeps generated data outside the repository by default:
 ~/.cache/cocelo/weldline-reflectivity-detector/
 ├── build/
 ├── install/
-├── log/
-└── third_party/
+└── log/
 ```
 
 Set `COCELO_ARTIFACT_ROOT` to use another external artifact directory.
-`COCELO_BUILD_BASE`, `COCELO_INSTALL_BASE`, `COCELO_LOG_BASE`, and
-`ONNXRUNTIME_CACHE_DIR` remain available for individual overrides.
+`COCELO_BUILD_BASE`, `COCELO_INSTALL_BASE`, and `COCELO_LOG_BASE` remain
+available for individual overrides.
 
 Before the first launch, set a unique DDS domain and the physical RealSense USB topology in [config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml). `usb_port_id` is deliberately required when the integrated driver starts, preventing an arbitrary camera from being selected on multi-camera systems.
 
@@ -165,7 +164,13 @@ An example COCO person detector is included as `weights/person_yolov5n.onnx`. It
 WEIGHTS=$PWD/weights/person_yolov5n.onnx ./launch.sh target_class_id:=0
 ```
 
-`./build.sh` prepares an architecture-matched ONNX Runtime C++ SDK when the system does not already provide one, then validates the configured ONNX model with ONNX Runtime on the target machine. This avoids OpenCV DNN parser failures such as unsupported `TopK` nodes on Jetson while still failing the build if the model itself cannot be loaded. Override the model used for validation with `WELDLINE_ONNX_MODEL=/opt/models/weldline.onnx ./build.sh`.
+Install Python runtime dependencies once before launching the detector:
+
+```bash
+python3 -m pip install --user -r requirements.txt
+```
+
+The model is loaded by Python ONNX Runtime when the detector node starts.
 
 `launch.sh` starts `realsense2_camera/rs_launch.py`, `yolo_weldline_3d_node`,
 and `scenario_commander_node` together. The default `camera_name:=camera`
@@ -194,7 +199,7 @@ Use `--vis` to show `/weldline_yolo/debug/annotated_image` in an OpenCV window w
 
 ## RealSense diagnostics and visualization
 
-The Python visualizer is separate from the production C++ detector and intentionally has no ROS 2 dependency. Run it before `./launch.sh` when you need to decide which physical RealSense should be assigned to `usb_port_id` in `yolo_weldline_3d.yaml`.
+The Python visualizer is separate from the ROS 2 detector and intentionally has no ROS 2 dependency. Run it before `./launch.sh` when you need to decide which physical RealSense should be assigned to `usb_port_id` in `yolo_weldline_3d.yaml`.
 
 It uses `pyrealsense2` to discover and open every connected camera directly, logs each serial number and USB topology, overlays the same identifiers on each video tile, and can draw ONNX Runtime detections using `weights/person_yolov5n.onnx`. OpenCV is used only for image display and drawing, not ONNX inference. Press `q`, `Esc`, or `Ctrl+C` to release every RealSense pipeline.
 
@@ -209,7 +214,7 @@ python3 scripts/realsense_visualize.py --no-detect
 
 The default visualizer profile is `640,480,30`; lower it with `--color-profile 424,240,15` on constrained USB buses. The detector overlay defaults to the COCO person class (`target_class_id=0`). If Python ONNX Runtime is not installed, use `--no-detect` for USB/image-only mode.
 
-ROS 2 parameters are in [config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml). The launch file is XML-only; application logic resides in [src/yolo_weldline_3d_node.cpp](src/yolo_weldline_3d_node.cpp).
+ROS 2 parameters are in [config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml). The launch file is XML-only; application logic resides in [yolo_node.py](weldline_reflectivity_detector/yolo_node.py).
 
 ## Debian packages: AMD and ARM
 
@@ -221,7 +226,7 @@ Run the package build on the target architecture:
 
 The script reads both the ROS distribution and Debian architecture from the current machine, accepts `amd64` or `arm64`, builds with `colcon`, stages the resulting ROS package under `/opt/cocelo/weldline-detector/install`, and creates the `.deb` with `dpkg-deb`. The filename explicitly identifies its compatibility target, for example `cocelo-weldline-detector_1.0.0-1+humble22.04_amd64.deb` or `cocelo-weldline-detector_1.0.0-1+jazzy24.04_arm64.deb`; a paired `.build-info` file records the same values.
 
-This native package path does not require `bloom`. The package assumes ROS 2 is already installed at `/opt/ros/${ROS_DISTRO}`, bundles the detector-specific runtime tree and ONNX Runtime shared library, and declares the official `ros-${ROS_DISTRO}-realsense2-camera` driver dependency. After installation:
+This package path does not require `bloom`. The package assumes ROS 2 is already installed at `/opt/ros/${ROS_DISTRO}`, bundles the detector-specific runtime tree, and declares the official `ros-${ROS_DISTRO}-realsense2-camera` driver dependency. Install the Python ONNX Runtime dependency on the target before launching.
 
 ```bash
 sudo apt install ./dist/cocelo-weldline-detector_<version>_<arch>.deb
@@ -234,7 +239,7 @@ weldline-detector-doctor
 
 ## Deployment notes
 
-- Use a valid ONNX model supported by ONNX Runtime on the target. The supplied model is verified during build; a corrupt or unsupported ONNX file is rejected at build/startup with a fatal diagnostic.
+- Use a valid ONNX model supported by Python ONNX Runtime on the target. A corrupt or unsupported model is rejected at node startup with a fatal diagnostic.
 - Keep the model and ROS distribution identical across AMD/ARM release builds for reproducible detector behavior.
 - Connect the sensor optical frame to `map` (or configure `output_frame` to a valid TF frame) before enabling Nav2 navigation.
 # cocelo-hd-detection

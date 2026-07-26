@@ -1,0 +1,4 @@
+numpy
+onnxruntime
+opencv-python
+PyYAML

@@ -5,8 +5,8 @@
   <description>ROS 2 scenario commander with precision wall alignment and RGB-D weld-line localization.</description>
   <maintainer email="engineering@cocelo.ai">Cocelo Engineering</maintainer>
   <license>MIT</license>
-  <buildtool_depend>ament_cmake</buildtool_depend>
-  <depend>rclcpp</depend>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
@@ -16,12 +16,12 @@
   <depend>tf2_geometry_msgs</depend>
   <depend>message_filters</depend>
   <depend>cv_bridge</depend>
-  <depend>yaml_cpp_vendor</depend>
-  <depend>image_transport</depend>
-  <depend>opencv</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <!-- Runtime dependency: native deb packaging maps this to ros-${ROS_DISTRO}-realsense2-camera. -->
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>ros2launch</exec_depend>
-  <test_depend>ament_cmake_gtest</test_depend>
-  <export><build_type>ament_cmake</build_type></export>
+  <test_depend>python3-pytest</test_depend>
+  <export><build_type>ament_python</build_type></export>
 </package>

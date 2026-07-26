@@ -259,7 +259,6 @@ if [[ "${SKIP_BUILD}" != "true" ]]; then
     COCELO_BUILD_BASE="${PACKAGE_BUILD_ROOT}/build" \
     COCELO_INSTALL_BASE="${INSTALL_ROOT}" \
     COCELO_LOG_BASE="${PACKAGE_BUILD_ROOT}/log" \
-    ONNXRUNTIME_CACHE_DIR="${dependency_cache}" \
     "${REPO_DIR}/build.sh"
 else
   INSTALL_ROOT="${colcon_install_base}"
@@ -317,7 +316,7 @@ Bundled in this package:
 
 - weldline_reflectivity_detector binary, launch, config, and package resources
 - ONNX model weights installed with the package
-- ONNX Runtime shared library used by the C++ detector
+- Python detector and commander entry points
 - direct RealSense USB visualizer script
 
 The package deliberately does not bundle /opt/ros/${ROS_DISTRO_NAME}, glibc,
@@ -405,10 +404,10 @@ Section: robotics
 Priority: optional
 Architecture: ${ARCH}
 Maintainer: Cocelo <engineering@cocelo.ai>
-Depends: bash, python3, python3-numpy, python3-opencv, ros-${ROS_DISTRO_NAME}-rclpy, ros-${ROS_DISTRO_NAME}-geometry-msgs, ros-${ROS_DISTRO_NAME}-sensor-msgs, ros-${ROS_DISTRO_NAME}-yaml-cpp-vendor, ros-${ROS_DISTRO_NAME}-realsense2-camera, ros-${ROS_DISTRO_NAME}-ros2launch
+Depends: bash, python3, python3-numpy, python3-opencv, python3-yaml, ros-${ROS_DISTRO_NAME}-rclpy, ros-${ROS_DISTRO_NAME}-geometry-msgs, ros-${ROS_DISTRO_NAME}-sensor-msgs, ros-${ROS_DISTRO_NAME}-realsense2-camera, ros-${ROS_DISTRO_NAME}-ros2launch
 Description: Cocelo scenario commander and weldline detector runtime
  Source-free runtime bundle for refined-map wall alignment, RealSense RGB-D
- weldline detection, Nav2 goal output, debug topics, ONNX Runtime inference,
+ weldline detection, Nav2 goal output, debug topics, Python ONNX Runtime inference,
  and USB/detection visualization.
  This package assumes ROS 2 ${ROS_DISTRO_NAME} is already installed on the target
  system.
