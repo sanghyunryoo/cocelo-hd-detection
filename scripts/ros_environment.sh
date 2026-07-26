@@ -46,6 +46,8 @@ resolve_ros_environment() {
 
 source_ros_environment() {
   resolve_ros_environment
+  # ROS tooling is installed for the system Python, not an active virtual environment.
+  export PATH="/usr/bin:${PATH}"
   # Some ROS setup files reference optional variables; callers commonly use `set -u`.
   set +u
   # shellcheck disable=SC1090

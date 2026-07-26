@@ -11,7 +11,7 @@
 
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 namespace weldline_reflectivity_detector
 {
@@ -80,7 +80,7 @@ void ScenarioCommanderNode::initialize_scenario(const std::string & scenario_fil
 }
 
 void ScenarioCommanderNode::on_detector_goal(
-  const geometry_msgs::msg::PoseStamped::ConstSharedPtr & message)
+  geometry_msgs::msg::PoseStamped::ConstSharedPtr message)
 {
   if (scenario_planner_->detector_waypoint_resolved()) {
     return;

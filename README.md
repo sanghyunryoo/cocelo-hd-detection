@@ -130,21 +130,19 @@ source /opt/ros/<your_ros_distro>/setup.bash  # optional if exactly one ROS 2 di
 ```
 
 Like `cocelo-hd-autonomy-light`, this repository is managed as a standalone
-package. `build.sh` writes all generated data under the repository root:
+package. `build.sh` keeps generated data outside the repository by default:
 
 ```text
-cocelo-hd-detection/
+~/.cache/cocelo/weldline-reflectivity-detector/
 ├── build/
 ├── install/
 ├── log/
-├── third_party/
-├── config/
-├── include/
-└── src/
+└── third_party/
 ```
 
-`COCELO_BUILD_BASE`, `COCELO_INSTALL_BASE`, and `COCELO_LOG_BASE` are available
-for isolated CI builds. ONNX Runtime is cached under `third_party/`.
+Set `COCELO_ARTIFACT_ROOT` to use another external artifact directory.
+`COCELO_BUILD_BASE`, `COCELO_INSTALL_BASE`, `COCELO_LOG_BASE`, and
+`ONNXRUNTIME_CACHE_DIR` remain available for individual overrides.
 
 Before the first launch, set a unique DDS domain and the physical RealSense USB topology in [config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml). `usb_port_id` is deliberately required when the integrated driver starts, preventing an arbitrary camera from being selected on multi-camera systems.
 

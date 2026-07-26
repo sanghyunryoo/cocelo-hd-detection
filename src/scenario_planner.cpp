@@ -118,14 +118,12 @@ ScenarioDefinition load_scenario_file(const std::string & path)
   if (path.empty()) {
     throw std::invalid_argument("scenario_file must not be empty");
   }
-
   YAML::Node root;
   try {
     root = YAML::LoadFile(path);
   } catch (const YAML::Exception & error) {
     throw std::invalid_argument("Cannot load scenario file '" + path + "': " + error.what());
   }
-
   reject_unknown_keys(
     root, {"version", "frame_id", "detector", "control", "waypoints"}, "scenario");
 
@@ -138,7 +136,6 @@ ScenarioDefinition load_scenario_file(const std::string & path)
   if (scenario.frame_id.empty()) {
     throw std::invalid_argument("scenario.frame_id must not be empty");
   }
-
   const auto detector = root["detector"];
   reject_unknown_keys(
     detector,
@@ -175,7 +172,6 @@ ScenarioDefinition load_scenario_file(const std::string & path)
     throw std::invalid_argument(
             "detector goal_topic must not be empty and stable_samples must be in [2, 100]");
   }
-
   const auto control = root["control"];
   reject_unknown_keys(
     control,
@@ -230,12 +226,10 @@ ScenarioDefinition load_scenario_file(const std::string & path)
     throw std::invalid_argument(
             "control rate_hz must be <= 100 and topic/frame names must not be empty");
   }
-
   const auto waypoints = root["waypoints"];
   if (!waypoints || !waypoints.IsSequence() || waypoints.size() < 2U) {
     throw std::invalid_argument("scenario.waypoints must contain detector + fixed waypoints");
   }
-
   std::set<std::string> waypoint_ids;
   for (std::size_t index = 0U; index < waypoints.size(); ++index) {
     const auto node = waypoints[index];

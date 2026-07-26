@@ -17,7 +17,7 @@ Assumption:
 Options:
   --version VERSION       Debian package version. Default: package.xml version.
   --revision REV          Debian revision base. Default: 1.
-  --output-dir DIR        Output directory. Default: dist.
+  --output-dir DIR        Output directory. Default: external artifact directory.
   --ros-distro NAME       ROS distro. Default: ROS_DISTRO or auto-detected /opt/ros.
   --skip-build            Package the existing install tree without rebuilding.
   --no-strip              Do not strip runtime binaries/libraries.
@@ -40,7 +40,7 @@ resolve_project_paths "${REPO_DIR}"
 ROS_DISTRO_NAME="${ROS_DISTRO:-}"
 VERSION=""
 REVISION="1"
-OUTPUT_DIR="${REPO_DIR}/dist"
+OUTPUT_DIR="${COCELO_PACKAGE_OUTPUT_DIR:-${artifact_root}/dist}"
 SKIP_BUILD="false"
 DO_STRIP="true"
 

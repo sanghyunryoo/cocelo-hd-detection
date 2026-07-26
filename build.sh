@@ -26,5 +26,6 @@ colcon --log-base "$colcon_log_base" build \
   --packages-select weldline_reflectivity_detector \
   --cmake-args \
   -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}" \
+  -DPYTHON_EXECUTABLE=/usr/bin/python3 \
   -DWELDLINE_ONNX_MODEL="$model_path" \
   -DONNXRUNTIME_ROOT="$onnxruntime_root"

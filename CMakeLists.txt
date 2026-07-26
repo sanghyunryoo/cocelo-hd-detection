@@ -38,6 +38,7 @@ target_link_libraries(scenario_planner PUBLIC yaml-cpp)
 
 add_executable(scenario_commander_node
   src/scenario_commander_node.cpp
+  src/scenario_commander_map.cpp
   src/scenario_drive.cpp)
 target_include_directories(scenario_commander_node PRIVATE include)
 target_compile_options(scenario_commander_node PRIVATE -Wall -Wextra -Wpedantic -Wconversion)

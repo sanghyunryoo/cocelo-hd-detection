@@ -5,7 +5,6 @@
 #include <mutex>
 #include <optional>
 #include <string>
-#include <vector>
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
@@ -20,6 +19,7 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 
 #include "weldline_reflectivity_detector/scenario_planner.hpp"
+#include "weldline_reflectivity_detector/point_cloud_xyz.hpp"
 #include "weldline_reflectivity_detector/wall_alignment.hpp"
 
 namespace weldline_reflectivity_detector
@@ -31,26 +31,18 @@ public:
     const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
-  struct Point3D
-  {
-    double x{0.0};
-    double y{0.0};
-    double z{0.0};
-  };
-
   struct CachedMap
   {
     std_msgs::msg::Header header;
     std::vector<Point3D> points;
   };
 
-  void on_global_map(const sensor_msgs::msg::PointCloud2::ConstSharedPtr & message);
+  void on_global_map(sensor_msgs::msg::PointCloud2::ConstSharedPtr message);
   void process_wall_alignment();
-  std::vector<Point3D> decode_xyz(const sensor_msgs::msg::PointCloud2 & message) const;
   void publish_invalid(const std::string & reason);
   void publish_estimate(const WallEstimate & estimate);
   void initialize_scenario(const std::string & scenario_file);
-  void on_detector_goal(const geometry_msgs::msg::PoseStamped::ConstSharedPtr & message);
+  void on_detector_goal(geometry_msgs::msg::PoseStamped::ConstSharedPtr message);
   void process_scenario_control();
   bool lookup_robot_pose(Pose2D & pose, std::string & reason);
   void publish_planner_output(const PlannerOutput & output);
