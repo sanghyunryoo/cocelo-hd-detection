@@ -10,54 +10,43 @@ The detector and commander are Python ROS 2 nodes. The detector uses Python ONNX
 Runtime for inference and OpenCV for image processing. The integrated bringup
 launches RealSense, the detector, and the commander.
 
-## Scenario waypoint drive contract
+## File-defined mission state machine
 
-The strict route is defined in [config/scenario.yaml](config/scenario.yaml).
-Its first waypoint has `source: detector`, references `weights/best.onnx`, and is
-locked only after five fresh `/goal_pose` samples agree within the configured
-position/yaw spread. Every later waypoint is a predefined map pose. The shipped
-fixed coordinates are placeholders and must be replaced with surveyed poses
-before a real deployment.
+[config/scenario.yaml](config/scenario.yaml) is a version-2 mission file. It
+contains the named goals and the exact 16-state weld-line sequence requested for
+this robot: detect, move to weld line, left 90°, destination 1, align, sit,
+destination 2, align, destination 3, 180°, align, return via destinations 2 and
+1 with alignment after each, then return to the weld line. The three fixed
+destination coordinates are placeholders; survey and replace them before using a
+real robot.
 
-The controller reads the latest `map -> base_link` pose from TF. With
-autonomy-light this is the composed `map -> odom -> base_link` chain. Map-frame
-position error is converted into `base_link` axes for a holonomic `[vx, vy]`
-command. This is intentionally a direct waypoint controller, not a collision
-avoiding global/local planner.
+`move` compares the current `map -> base_link` SLAM/TF pose with the named goal.
+While outside `position_tolerance_m`, it converts the map-frame error into body
+frame `cmd vx vy wz` with `wz=0`. `turn` compares the current SLAM yaw with the
+relative target yaw (this deliberately distinguishes 180°), then verifies the
+configured front-wall angle. `align_wall` uses only the front-wall angle and
+finishes when its absolute value is below `angle_tolerance_deg`. Missing pose,
+goal, or required wall input stops motion.
 
-| Interface | Type / QoS | Meaning |
-| --- | --- | --- |
-| Detector waypoint | `geometry_msgs/PoseStamped` on `/goal_pose` | Dynamic first waypoint |
-| Robot pose | TF `map -> base_link` | Current planar position and yaw |
-| Wall input | Internal wall estimate | Continuous physical alignment error |
-| RL command | `std_msgs/String`, depth 10, reliable/volatile on `/fsm_cmd` | `cmd vx vy wz` (`m/s`, `m/s`, `rad/s`) |
-| Scenario status | `std_msgs/String` on `/commander/scenario/status` | State, waypoint, errors, command, and stop reason |
+| Interface | Meaning |
+| --- | --- |
+| `/goal_pose` (`geometry_msgs/PoseStamped`) | Weld-line 3D goal, locked after stable samples |
+| TF `map -> base_link` (or simulator `/odom_gt`) | Current planar pose for move/turn checks |
+| `/fsm_cmd` (`std_msgs/String`) | `cmd vx vy wz`, plus `SIT` and `RL` state commands |
+| `/commander/scenario/status` (`std_msgs/String`) | Current state, reason, and emitted command |
+| `/commander/mission/resume` (`std_msgs/String`) | Send `resume` after the external SIT state is confirmed |
 
-Safety and transition rules are fail-closed:
-
-- missing/stale/future TF, detector pose, or wall estimate always emits
-  `cmd 0.000000 0.000000 0.000000`;
-- wall error above `wall_motion_gate_deg` disables translation and commands only
-  proportional `wz`;
-- while translating, wall `wz` correction remains active continuously;
-- a waypoint advances only after position, scenario yaw, and wall yaw all remain
-  within their individual tolerances for `hold_time_sec`;
-- an inconsistent scenario yaw and physical wall heading enters
-  `HEADING_CONFLICT` and stops;
-- the last waypoint stays in closed-loop `HOLDING_FINAL` forever. Position or
-  alignment drift immediately reactivates correction.
-
-`yaw_mode: parallel` enforces yaw modulo 180 degrees, which matches an
-undirected wall tangent. Use `directional` only when yaw and yaw+180 degrees must
-be distinguished. Override the scenario at launch with
-`WELDLINE_SCENARIO=/path/to/scenario.yaml ./launch.sh`.
-
-Inspect the live controller:
+At `SIT` the commander sends `SIT` once, stops, and waits. It does not assume
+which state machine owns the transition. After external confirmation, resume the
+mission explicitly; it sends `RL` once and moves to destination 2:
 
 ```bash
-ros2 topic echo /fsm_cmd
+ros2 topic pub --once /commander/mission/resume std_msgs/msg/String "{data: resume}"
 ros2 topic echo /commander/scenario/status
 ```
+
+Override the mission file at launch with
+`WELDLINE_SCENARIO=/path/to/scenario.yaml ./launch.sh`.
 
 ## Commander wall-alignment contract
 
@@ -121,12 +110,12 @@ ros2 launch weldline_reflectivity_detector scenario_commander_sim.launch.xml
 ```
 
 The simulator launch publishes `RL` on `/fsm_cmd` for the first two seconds to
-activate the OZZ control manager, then sends waypoint commands. It uses
-`/odom_gt` as the pose source and drives `wz` from the signed difference between
-the robot yaw and `wall_heading_deg` (default `0`, a wall parallel to world X).
-Set `wall_heading_deg` to the actual wall tangent if the simulated wall is not
-parallel to world X. The first detector waypoint is replaced by the initial
-simulator pose; subsequent fixed waypoints in `scenario.yaml` are followed.
+activate the OZZ control manager, then executes the file-defined mission. It
+uses `/odom_gt` as the pose source and derives the front-wall angle from the
+signed difference between robot yaw and `wall_heading_deg` (default `0`, a wall
+parallel to world X). Set `wall_heading_deg` to the actual wall tangent if the
+simulated wall is not parallel to world X. The detector goal is replaced by the
+initial simulator pose when `simulator_skip_detector_waypoint` is enabled.
 
 ## Runtime contract
 

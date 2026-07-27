@@ -18,7 +18,8 @@ from tf2_ros import Buffer, TransformListener, TransformException
 from visualization_msgs.msg import Marker, MarkerArray
 
 from .point_cloud_xyz import decode_point_cloud_xyz
-from .scenario import Pose2D, ScenarioPlanner, format_fsm_command, load_scenario, normalize_angle, normalize_parallel_angle, wall_heading_error
+from .mission import MissionController, load_mission
+from .scenario import Pose2D, format_fsm_command, normalize_parallel_angle, wall_heading_error
 from .wall_alignment import Point2D, WallConfig, estimate_wall
 
 
@@ -72,14 +73,17 @@ class ScenarioCommanderNode(Node):
         self.load_control()
 
     def load_control(self) -> None:
-        self.planner = ScenarioPlanner(load_scenario(self.scenario_file))
-        scenario = self.planner.scenario
-        if scenario.control.robot_frame != self.reference_link: raise ValueError("scenario robot_frame must match reference_link")
-        self.command_pub = self.create_publisher(String, scenario.control.command_topic, 10)
-        self.status_pub = self.create_publisher(String, scenario.control.status_topic, 10)
-        self.goal_samples = deque(maxlen=scenario.detector.stable_samples)
-        self.goal_sub = self.create_subscription(PoseStamped, scenario.detector.goal_topic, self.on_goal, 10)
-        self.create_timer(1.0 / scenario.control.rate_hz, self.process_control)
+        self.mission = MissionController(load_mission(self.scenario_file))
+        config = self.mission.config
+        if config.control.robot_frame != self.reference_link: raise ValueError("mission robot_frame must match reference_link")
+        self.command_pub = self.create_publisher(String, config.control.command_topic, 10)
+        self.status_pub = self.create_publisher(String, config.control.status_topic, 10)
+        self.resume_topic = self.declare_parameter("mission_resume_topic", "/commander/mission/resume").value
+        self.resume_sub = self.create_subscription(String, self.resume_topic, self.on_resume, 10)
+        self.goal_samples = deque(maxlen=config.detector.stable_samples)
+        self.goal_sub = self.create_subscription(PoseStamped, config.detector.goal_topic, self.on_goal, 10)
+        self.last_mission_state = None
+        self.create_timer(1.0 / config.control.rate_hz, self.process_control)
 
     def on_map(self, message: PointCloud2) -> None:
         try:
@@ -90,15 +94,15 @@ class ScenarioCommanderNode(Node):
     def on_simulator_odom(self, message: Odometry) -> None:
         pose = message.pose.pose
         self.simulator_pose = Pose2D(pose.position.x, pose.position.y, _yaw(pose.orientation))
-        if self.simulator_skip_detector and not self.planner.detector_resolved:
-            self.planner.set_detector_waypoint(self.simulator_pose)
+        if self.simulator_skip_detector and self.mission.detected_goal is None:
+            self.mission.set_detected_goal(self.simulator_pose)
             self.get_logger().info("Simulator mode locked the detector waypoint at the initial /odom_gt pose")
 
     def on_goal(self, message: PoseStamped) -> None:
-        if self.planner.detector_resolved or not message.header.frame_id: return
-        scenario = self.planner.scenario
+        if self.mission.detected_goal is not None or not message.header.frame_id: return
+        config = self.mission.config
         try:
-            if message.header.frame_id != scenario.frame_id: message = self.buffer.transform(message, scenario.frame_id, timeout=Duration(seconds=scenario.control.tf_timeout))
+            if message.header.frame_id != config.frame_id: message = self.buffer.transform(message, config.frame_id, timeout=Duration(seconds=self.tf_timeout))
         except TransformException as error:
             self.get_logger().warning(f"Cannot transform detector waypoint: {error}"); return
         pose = Pose2D(message.pose.position.x, message.pose.position.y, _yaw(message.pose.orientation))
@@ -107,12 +111,15 @@ class ScenarioCommanderNode(Node):
         if len(self.goal_samples) < self.goal_samples.maxlen: return
         mean_x = sum(item.x for item in self.goal_samples) / len(self.goal_samples)
         mean_y = sum(item.y for item in self.goal_samples) / len(self.goal_samples)
-        mode = scenario.waypoints[0].yaw_mode
-        multiplier = 2 if mode == "parallel" else 1
+        multiplier = 2
         yaw = atan2(sum(sin(multiplier * item.yaw) for item in self.goal_samples), sum(cos(multiplier * item.yaw) for item in self.goal_samples)) / multiplier
-        difference = normalize_parallel_angle if mode == "parallel" else normalize_angle
-        if max(((item.x - mean_x) ** 2 + (item.y - mean_y) ** 2) ** 0.5 for item in self.goal_samples) <= scenario.detector.max_position_spread and max(abs(difference(item.yaw, yaw)) for item in self.goal_samples) <= scenario.detector.max_yaw_spread:
-            self.planner.set_detector_waypoint(Pose2D(mean_x, mean_y, yaw)); self.destroy_subscription(self.goal_sub); self.get_logger().info("Locked stable detector waypoint")
+        if max(((item.x - mean_x) ** 2 + (item.y - mean_y) ** 2) ** 0.5 for item in self.goal_samples) <= config.detector.max_position_spread and max(abs(normalize_parallel_angle(item.yaw - yaw)) for item in self.goal_samples) <= config.detector.max_yaw_spread:
+            self.mission.set_detected_goal(Pose2D(mean_x, mean_y, yaw)); self.destroy_subscription(self.goal_sub); self.get_logger().info("Locked stable weld-line goal pose")
+
+    def on_resume(self, message: String) -> None:
+        if message.data.strip().lower() in {"resume", "rl"}:
+            self.mission.request_resume()
+            self.get_logger().info("Mission resume requested; SIT state will re-enter RL mode")
 
     def process_wall(self) -> None:
         if self.cached_map is None: return self.publish_invalid()
@@ -137,8 +144,8 @@ class ScenarioCommanderNode(Node):
 
     def robot_pose(self):
         if self.simulator_mode: return self.simulator_pose
-        scenario = self.planner.scenario
-        try: transform = self.buffer.lookup_transform(scenario.frame_id, scenario.control.robot_frame, rclpy.time.Time(), timeout=Duration(seconds=scenario.control.tf_timeout))
+        config = self.mission.config
+        try: transform = self.buffer.lookup_transform(config.frame_id, config.control.robot_frame, rclpy.time.Time(), timeout=Duration(seconds=self.tf_timeout))
         except TransformException: return None
         return Pose2D(transform.transform.translation.x, transform.transform.translation.y, _yaw(transform.transform.rotation))
 
@@ -149,9 +156,13 @@ class ScenarioCommanderNode(Node):
             self.command_pub.publish(String(data=format_fsm_command(0.0, 0.0, 0.0)))
             return
         wall_error = wall_heading_error(pose.yaw, self.simulator_wall_heading) if self.simulator_mode and pose else self.filtered_angle
-        output = self.planner.update(pose, wall_error, now)
-        self.command_pub.publish(String(data=format_fsm_command(output.vx, output.vy, output.wz)))
-        self.status_pub.publish(String(data=f"{output.state}: {output.detail}"))
+        output = self.mission.update(pose, wall_error)
+        command = output.fsm_command or format_fsm_command(output.vx, output.vy, output.wz)
+        self.command_pub.publish(String(data=command))
+        if output.state != self.last_mission_state:
+            self.get_logger().info(f"Mission state: {output.state} ({output.detail})")
+            self.last_mission_state = output.state
+        self.status_pub.publish(String(data=f"state={output.state}; detail={output.detail}; command={command}"))
 
 
 def main() -> None:
