@@ -101,6 +101,30 @@ fi
 # shellcheck disable=SC1091
 source "$environment_helper"
 source_ros_environment
+
+check_realsense_dependency() {
+  local ros_distro="${ROS_DISTRO:-unknown}"
+  if ! command -v ros2 >/dev/null 2>&1; then
+    echo "ros2 command was not found in PATH. Source the ROS 2 environment first." >&2
+    exit 2
+  fi
+
+  if ! ros2 pkg prefix realsense2_camera >/dev/null 2>&1; then
+    echo "RealSense ROS package 'realsense2_camera' is not available in the current environment." >&2
+    echo "Current ROS_DISTRO: ${ros_distro}" >&2
+    echo "Install the package with: sudo apt install ros-${ros_distro}-realsense2-camera" >&2
+    echo "If you already installed it, source the matching setup script first, for example:" >&2
+    echo "  source /opt/ros/${ros_distro}/setup.bash" >&2
+    echo "If you do not need the integrated camera driver, start without it:" >&2
+    echo "  ./launch.sh start_realsense:=false" >&2
+    exit 2
+  fi
+}
+
+if [[ "$start_realsense" == true ]]; then
+  check_realsense_dependency
+fi
+
 if [[ "$source_tree_invocation" == true ]]; then
   # shellcheck disable=SC1090
   source "$paths_helper"

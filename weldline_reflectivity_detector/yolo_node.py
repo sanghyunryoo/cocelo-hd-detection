@@ -9,6 +9,7 @@ import cv2
 import message_filters
 import numpy as np
 import rclpy
+import tf2_geometry_msgs  # noqa: F401  # Registers PointStamped / PoseStamped transform support for tf2.
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Point, PointStamped, PoseStamped
 from rclpy.duration import Duration

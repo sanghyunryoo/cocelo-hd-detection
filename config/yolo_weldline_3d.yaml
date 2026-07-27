@@ -3,7 +3,7 @@ yolo_weldline_3d_node:
     # Deployment settings consumed by launch.sh before ROS 2 starts.
     # ros_domain_id is exported as ROS_DOMAIN_ID; usb_port_id selects the physical RealSense.
     ros_domain_id: 0
-    usb_port_id: "2-1.4"
+    usb_port_id: "2-3.3"
     # Relative paths are resolved by launch.sh; deploy an ONNX model with the package or pass weights:=.
     weights: "weights/person_yolov5n.onnx"
     color_topic: "/camera/color/image_raw"
