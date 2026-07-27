@@ -36,7 +36,7 @@ mission:
   - {name: ALIGN_WALL_1, action: align_wall, angle_tolerance_deg: 0.50}
   - {name: MOVE_DESTINATION_2, action: move, goal: destination_2, position_tolerance_m: 0.05}
   - {name: ALIGN_WALL_2, action: align_wall, angle_tolerance_deg: 0.50}
-  - {name: SIT, action: sit, requires_resume: true}
+  # - {name: SIT, action: sit, requires_resume: true}
   - {name: MOVE_DESTINATION_3, action: move, goal: destination_3, position_tolerance_m: 0.05}
   - {name: TURN_180, action: turn, angle_deg: 180.0, angle_tolerance_deg: 0.75, wall_angle_deg: 0.0, wall_tolerance_deg: 1.0}
   - {name: ALIGN_WALL_3, action: align_wall, angle_tolerance_deg: 0.50}
