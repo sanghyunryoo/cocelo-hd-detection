@@ -1,79 +1,27 @@
-yolo_weldline_3d_node:
+weldline_goal_node:
   ros__parameters:
-    # Deployment settings consumed by launch.sh before ROS 2 starts.
-    # ros_domain_id is exported as ROS_DOMAIN_ID; usb_port_id selects the physical RealSense.
+    # launch.sh exports this before ROS starts.
     ros_domain_id: 0
-    usb_port_id: "2-3.3"
-    # Relative paths are resolved by launch.sh; deploy an ONNX model with the package or pass weights:=.
-    weights: "weights/person_yolov5n.onnx"
-    color_topic: "/camera/color/image_raw"
-    depth_topic: "/camera/aligned_depth_to_color/image_raw"
-    camera_info_topic: "/camera/color/camera_info"
+
+    # "auto" selects the only connected Intel RealSense device. If multiple
+    # cameras are connected, set this to the intended USB topology, e.g. "2-3.4".
+    usb_port_id: "auto"
+
+    weights: "weights/best.onnx"
+    color_topic: "/camera/camera/color/image_raw"
+    depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera/camera/color/camera_info"
+
     output_frame: "map"
     processing_rate_hz: 30.0
-    # -1 accepts the best class from the model. COCO person-only filtering uses target_class_id: 0.
-    target_class_id: 0
+    target_class_id: -1
     confidence_threshold: 0.40
     nms_threshold: 0.25
     depth_window: 7
     use_line_detection: true
-    nav2_planar_goal: false
-    nav2_goal_topic: "/goal_pose"
-    debug_point_topic: "/weldline_yolo/debug/center_point"
-    marker_topic: "/weldline_yolo/debug/markers"
-    annotated_topic: "/weldline_yolo/debug/annotated_image"
+    allow_latest_tf_fallback: true
 
-scenario_commander_node:
-  ros__parameters:
-    # Refined POINT_LIO global map. The subscriber matches its reliable,
-    # transient-local QoS so a cached map is received even after late startup.
-    global_map_topic: "/point_lio/global_map_refined"
-
-    # +X of this link is the robot's forward/alignment axis. Published angle is
-    # the signed shortest rotation from +X to the selected wall tangent.
-    reference_link: "base_link"
-
-    # The map is cached once and re-evaluated with the latest TF at this rate.
-    wall_processing_rate_hz: 5.0
-    wall_tf_timeout_sec: 0.05
-    # false is recommended for a latched global map: crop around the current robot pose.
-    use_cloud_stamp_for_tf: false
-
-    # Local crop in the reference-link frame.
-    wall_minimum_range: 0.25
-    wall_search_radius: 3.0
-    wall_minimum_height: -2.0
-    wall_maximum_height: 2.0
-    wall_point_stride: 1
-
-    # XY cells with sufficient Z extent are retained as vertical-surface evidence.
-    # This rejects floor/ceiling points before fitting. Set span to 0.0 to disable.
-    wall_xy_voxel_size: 0.04
-    wall_minimum_vertical_span: 0.35
-    wall_minimum_voxel_points: 3
-
-    # Multi-model RANSAC followed by total-least-squares refinement.
-    wall_ransac_distance_threshold: 0.04
-    wall_ransac_iterations: 300
-    wall_max_candidates: 6
-    wall_minimum_inliers: 30
-    wall_minimum_length: 0.8
-    wall_max_fit_rmse: 0.04
-
-    # selection: tracked | strongest | nearest. "tracked" initially chooses the
-    # strongest wall, then keeps the angularly continuous candidate.
-    # Use only the wall in the robot's forward (+X) sector.
-    wall_selection: "tracked"
-    wall_sector: "front"
-    wall_sector_half_angle_deg: 70.0
-    wall_tracking_max_angle_deg: 20.0
-
-    # 1.0 publishes the raw TLS estimate. Lower values apply pi-periodic EMA smoothing.
-    wall_angle_smoothing_alpha: 1.0
-
-    wall_angle_topic: "/commander/wall_alignment/angle_deg"
-    wall_distance_topic: "/commander/wall_alignment/distance_m"
-    wall_valid_topic: "/commander/wall_alignment/valid"
-    # Vector3Stamped fields: x=angle_deg, y=wall_distance_m, z=fit_rmse_m.
-    wall_metrics_topic: "/commander/wall_alignment/metrics"
-    wall_marker_topic: "/commander/wall_alignment/markers"
+    # Nav2 consumes geometry_msgs/PoseStamped; downstream code can subscribe
+    # here and convert this weldline goal into waypoint arrays.
+    nav2_planar_goal: true
+    goal_topic: "/weldline/goal_pose"

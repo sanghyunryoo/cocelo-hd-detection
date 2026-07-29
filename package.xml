@@ -1,17 +1,14 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>weldline_reflectivity_detector</name>
+  <name>weldline_goal_publisher</name>
   <version>0.1.0</version>
-  <description>ROS 2 scenario commander with precision wall alignment and RGB-D weld-line localization.</description>
+  <description>RealSense RGB-D weld-line localization to Nav2 PoseStamped goals.</description>
   <maintainer email="engineering@cocelo.ai">Cocelo Engineering</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_python</buildtool_depend>
   <depend>rclpy</depend>
-  <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
-  <depend>nav_msgs</depend>
-  <depend>visualization_msgs</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
@@ -19,7 +16,6 @@
   <depend>cv_bridge</depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
-  <exec_depend>python3-yaml</exec_depend>
   <!-- Runtime dependency: native deb packaging maps this to ros-${ROS_DISTRO}-realsense2-camera. -->
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>ros2launch</exec_depend>

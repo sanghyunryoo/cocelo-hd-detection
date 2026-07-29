@@ -4,7 +4,8 @@
 /log/
 
 # Release and local dependency artifacts
-/dist/
+/dist/*
+!/dist/.gitkeep
 /debian/
 /third_party/
 __pycache__/

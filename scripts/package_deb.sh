@@ -6,20 +6,22 @@ usage() {
 Usage:
   scripts/package_deb.sh [options]
 
-Build a source-free runtime .deb for the Cocelo scenario commander and detector.
+Build a source-free runtime .deb for the Cocelo weldline goal detector.
 
 Assumption:
   The target already has the same Ubuntu/ROS 2 pair used to build this package.
-  This package bundles the scenario commander and weldline detector runtime,
-  ONNX weights, ONNX Runtime shared library prepared by build.sh, editable
-  config, launcher, visualizer helper, and doctor helper.
+  This package bundles the weldline detector runtime,
+  ONNX weights, all Python packages from requirements.txt, editable config,
+  launcher and doctor helper. Ubuntu and ROS packages are
+  expressed as Debian dependencies so apt installs the matching system ABI.
 
 Options:
   --version VERSION       Debian package version. Default: package.xml version.
   --revision REV          Debian revision base. Default: 1.
-  --output-dir DIR        Output directory. Default: external artifact directory.
+  --output-dir DIR        Output directory. Default: <repository>/dist.
   --ros-distro NAME       ROS distro. Default: ROS_DISTRO or auto-detected /opt/ros.
   --skip-build            Package the existing install tree without rebuilding.
+  --no-bundle-python      Do not bundle packages from requirements.txt.
   --no-strip              Do not strip runtime binaries/libraries.
   -h, --help              Show this help.
 
@@ -27,7 +29,6 @@ The package installs:
   /opt/cocelo/weldline-detector/install   ROS 2 runtime install tree
   /etc/cocelo/weldline-detector           Editable runtime config
   /usr/bin/weldline-detector              Runtime launcher
-  /usr/bin/weldline-detector-visualize    USB/RGB/detection visualizer
   /usr/bin/weldline-detector-doctor       Runtime self-check helper
 EOF
 }
@@ -40,8 +41,9 @@ resolve_project_paths "${REPO_DIR}"
 ROS_DISTRO_NAME="${ROS_DISTRO:-}"
 VERSION=""
 REVISION="1"
-OUTPUT_DIR="${COCELO_PACKAGE_OUTPUT_DIR:-${artifact_root}/dist}"
+OUTPUT_DIR="${COCELO_PACKAGE_OUTPUT_DIR:-${REPO_DIR}/dist}"
 SKIP_BUILD="false"
+BUNDLE_PYTHON="true"
 DO_STRIP="true"
 
 while [[ $# -gt 0 ]]; do
@@ -84,6 +86,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-build)
       SKIP_BUILD="true"
+      shift
+      ;;
+    --no-bundle-python)
+      BUNDLE_PYTHON="false"
       shift
       ;;
     --no-strip)
@@ -264,7 +270,7 @@ else
   INSTALL_ROOT="${colcon_install_base}"
 fi
 
-PACKAGE_INSTALL_ROOT="${INSTALL_ROOT}/weldline_reflectivity_detector"
+PACKAGE_INSTALL_ROOT="${INSTALL_ROOT}/weldline_goal_publisher"
 if [[ ! -d "${PACKAGE_INSTALL_ROOT}" ]]; then
   echo "error: missing install tree: ${PACKAGE_INSTALL_ROOT}" >&2
   echo "hint: run ${REPO_DIR}/build.sh first, or omit --skip-build." >&2
@@ -274,7 +280,9 @@ fi
 mkdir -p \
   "${STAGE_ROOT}/DEBIAN" \
   "${STAGE_ROOT}/opt/cocelo/weldline-detector/install" \
+  "${STAGE_ROOT}/opt/cocelo/weldline-detector/python" \
   "${STAGE_ROOT}/etc/cocelo/weldline-detector" \
+  "${STAGE_ROOT}/etc/udev/rules.d" \
   "${STAGE_ROOT}/usr/bin" \
   "${STAGE_ROOT}/usr/share/doc/${PACKAGE_NAME}"
 
@@ -286,18 +294,38 @@ done
 
 copy_install_tree "${PACKAGE_INSTALL_ROOT}" "${STAGE_ROOT}/opt/cocelo/weldline-detector/install/"
 
+# Always package the current launcher, including its process-group cleanup.
+# This also prevents --skip-build from shipping a stale installed copy.
+PACKAGED_LAUNCHER="${STAGE_ROOT}/opt/cocelo/weldline-detector/install/weldline_goal_publisher/lib/weldline_goal_publisher/launch.sh"
+install -D -m 0755 "${REPO_DIR}/launch.sh" "${PACKAGED_LAUNCHER}"
+
+if [[ "${BUNDLE_PYTHON}" == "true" ]]; then
+  if [[ ! -s "${REPO_DIR}/requirements.txt" ]]; then
+    echo "error: requirements.txt is missing or empty" >&2
+    exit 1
+  fi
+  echo "Bundling Python runtime dependencies from requirements.txt"
+  python3 -m pip install \
+    --disable-pip-version-check \
+    --no-compile \
+    --upgrade \
+    --target "${STAGE_ROOT}/opt/cocelo/weldline-detector/python" \
+    -r "${REPO_DIR}/requirements.txt"
+  find "${STAGE_ROOT}/opt/cocelo/weldline-detector/python" \
+    \( -type d -name __pycache__ -o -type f -name '*.pyc' \) -prune -exec rm -rf {} +
+fi
+
 mkdir -p "${STAGE_ROOT}/opt/cocelo/weldline-detector/install/share/colcon-core/packages"
 copy_if_exists \
-  "${INSTALL_ROOT}/share/colcon-core/packages/weldline_reflectivity_detector" \
+  "${INSTALL_ROOT}/share/colcon-core/packages/weldline_goal_publisher" \
   "${STAGE_ROOT}/opt/cocelo/weldline-detector/install/share/colcon-core/packages/"
 
 cp -aL "${REPO_DIR}/config/yolo_weldline_3d.yaml" \
   "${STAGE_ROOT}/etc/cocelo/weldline-detector/yolo_weldline_3d.yaml"
-cp -aL "${REPO_DIR}/config/scenario.yaml" \
-  "${STAGE_ROOT}/etc/cocelo/weldline-detector/scenario.yaml"
-sed -i \
-  's|model: "../weights/best.onnx"|model: "/opt/cocelo/weldline-detector/install/weldline_reflectivity_detector/share/weldline_reflectivity_detector/weights/best.onnx"|' \
-  "${STAGE_ROOT}/etc/cocelo/weldline-detector/scenario.yaml"
+cat > "${STAGE_ROOT}/etc/udev/rules.d/99-cocelo-realsense-power.rules" <<'EOF'
+# Keep the RealSense D435IF awake while its V4L2 streams are active.
+SUBSYSTEM=="usb", ATTR{idVendor}=="8086", ATTR{idProduct}=="0b3a", TEST=="power/control", ATTR{power/control}="on"
+EOF
 
 cp -aL "${REPO_DIR}/README.md" "${STAGE_ROOT}/usr/share/doc/${PACKAGE_NAME}/README.md"
 cat > "${STAGE_ROOT}/usr/share/doc/${PACKAGE_NAME}/runtime_assumptions.txt" <<EOF
@@ -309,27 +337,35 @@ runtime artifacts while assuming the target system already provides:
 
 - Ubuntu userspace for ${ARCH}
 - ROS 2 ${ROS_DISTRO_NAME} installed at /opt/ros/${ROS_DISTRO_NAME}
-- Python 3, NumPy, OpenCV Python, and pyrealsense2 for the visualizer
 - Intel RealSense ROS 2 driver from the configured ROS apt repository
 
 Bundled in this package:
 
-- weldline_reflectivity_detector binary, launch, config, and package resources
+- weldline_goal_publisher binary, launch, config, and package resources
 - ONNX model weights installed with the package
-- Python detector and commander entry points
-- direct RealSense USB visualizer script
+- Python weldline goal publisher entry point
+- Python packages declared in requirements.txt, including ONNX Runtime
 
-The package deliberately does not bundle /opt/ros/${ROS_DISTRO_NAME}, glibc,
-libstdc++, OpenCV system libraries, or the RealSense driver package.
+The package deliberately does not copy /opt/ros/${ROS_DISTRO_NAME}, glibc, or
+other base OS files. Those are installed by apt from the Depends field so they
+match the target Ubuntu/ROS ABI.
 EOF
 
 cat > "${STAGE_ROOT}/usr/bin/weldline-detector" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
+LOCK_FILE="\${XDG_RUNTIME_DIR:-/tmp}/cocelo-weldline-detector-\${UID}.lock"
+exec 9>"\${LOCK_FILE}"
+if ! flock --nonblock 9; then
+  echo "error: weldline-detector is already running for this user." >&2
+  echo "stop the existing process before starting another instance." >&2
+  exit 1
+fi
+
 export ROS_DISTRO="${ROS_DISTRO_NAME}"
+export PYTHONPATH="/opt/cocelo/weldline-detector/python\${PYTHONPATH:+:\${PYTHONPATH}}"
 export WELDLINE_CONFIG="\${WELDLINE_CONFIG:-/etc/cocelo/weldline-detector/yolo_weldline_3d.yaml}"
-export WELDLINE_SCENARIO="\${WELDLINE_SCENARIO:-/etc/cocelo/weldline-detector/scenario.yaml}"
 
 if [[ -f "/opt/ros/${ROS_DISTRO_NAME}/setup.bash" ]]; then
   set +u
@@ -344,25 +380,17 @@ set +u
 source "/opt/cocelo/weldline-detector/install/setup.bash"
 set -u
 
-exec /opt/cocelo/weldline-detector/install/weldline_reflectivity_detector/lib/weldline_reflectivity_detector/launch.sh "\$@"
+exec /opt/cocelo/weldline-detector/install/weldline_goal_publisher/lib/weldline_goal_publisher/launch.sh "\$@"
 EOF
 chmod 0755 "${STAGE_ROOT}/usr/bin/weldline-detector"
-
-cat > "${STAGE_ROOT}/usr/bin/weldline-detector-visualize" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-
-exec python3 /opt/cocelo/weldline-detector/install/weldline_reflectivity_detector/lib/weldline_reflectivity_detector/realsense_visualize.py "\$@"
-EOF
-chmod 0755 "${STAGE_ROOT}/usr/bin/weldline-detector-visualize"
 
 cat > "${STAGE_ROOT}/usr/bin/weldline-detector-doctor" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
 export ROS_DISTRO="${ROS_DISTRO_NAME}"
+export PYTHONPATH="/opt/cocelo/weldline-detector/python\${PYTHONPATH:+:\${PYTHONPATH}}"
 CONFIG_FILE="\${WELDLINE_CONFIG:-/etc/cocelo/weldline-detector/yolo_weldline_3d.yaml}"
-SCENARIO_FILE="\${WELDLINE_SCENARIO:-/etc/cocelo/weldline-detector/scenario.yaml}"
 
 set +u
 source "/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
@@ -371,12 +399,11 @@ set -u
 
 echo "== weldline-detector runtime =="
 echo "config: \${CONFIG_FILE}"
-echo "scenario: \${SCENARIO_FILE}"
 echo "ros_distro: ${ROS_DISTRO_NAME}"
 echo
 
 echo "== package prefixes =="
-ros2 pkg prefix weldline_reflectivity_detector
+ros2 pkg prefix weldline_goal_publisher
 ros2 pkg prefix realsense2_camera
 echo
 
@@ -388,12 +415,8 @@ else
 fi
 echo
 
-echo "== connected RealSense devices =="
-weldline-detector-visualize --list-only || true
-echo
-
 echo "== weldline topics on current ROS_DOMAIN_ID=\${ROS_DOMAIN_ID:-0} =="
-ros2 topic list | grep -E 'weldline|goal_pose|fsm_cmd|commander|point_lio|camera' || true
+ros2 topic list | grep -E 'weldline|goal_pose|camera' || true
 EOF
 chmod 0755 "${STAGE_ROOT}/usr/bin/weldline-detector-doctor"
 
@@ -404,30 +427,29 @@ Section: robotics
 Priority: optional
 Architecture: ${ARCH}
 Maintainer: Cocelo <engineering@cocelo.ai>
-Depends: bash, python3, python3-numpy, python3-opencv, python3-yaml, ros-${ROS_DISTRO_NAME}-rclpy, ros-${ROS_DISTRO_NAME}-geometry-msgs, ros-${ROS_DISTRO_NAME}-sensor-msgs, ros-${ROS_DISTRO_NAME}-realsense2-camera, ros-${ROS_DISTRO_NAME}-ros2launch
-Description: Cocelo scenario commander and weldline detector runtime
- Source-free runtime bundle for refined-map wall alignment, RealSense RGB-D
- weldline detection, Nav2 goal output, debug topics, Python ONNX Runtime inference,
- and USB/detection visualization.
+Depends: bash, python3, util-linux, ros-${ROS_DISTRO_NAME}-rclpy, ros-${ROS_DISTRO_NAME}-geometry-msgs, ros-${ROS_DISTRO_NAME}-sensor-msgs, ros-${ROS_DISTRO_NAME}-tf2, ros-${ROS_DISTRO_NAME}-tf2-ros, ros-${ROS_DISTRO_NAME}-tf2-geometry-msgs, ros-${ROS_DISTRO_NAME}-message-filters, ros-${ROS_DISTRO_NAME}-cv-bridge, ros-${ROS_DISTRO_NAME}-realsense2-camera, ros-${ROS_DISTRO_NAME}-ros2launch
+Description: Cocelo weldline detector runtime
+ Source-free runtime bundle for RealSense RGB-D weldline detection,
+ Nav2 PoseStamped goal output, and Python ONNX Runtime inference.
  This package assumes ROS 2 ${ROS_DISTRO_NAME} is already installed on the target
  system.
 EOF
 
 cat > "${STAGE_ROOT}/DEBIAN/conffiles" <<'EOF'
 /etc/cocelo/weldline-detector/yolo_weldline_3d.yaml
-/etc/cocelo/weldline-detector/scenario.yaml
 EOF
 
 cat > "${STAGE_ROOT}/DEBIAN/postinst" <<'EOF'
 #!/usr/bin/env bash
 set -e
+if command -v udevadm >/dev/null 2>&1; then
+  udevadm control --reload-rules || true
+  udevadm trigger --action=change --subsystem-match=usb --attr-match=idVendor=8086 --attr-match=idProduct=0b3a || true
+fi
 echo
 echo "cocelo-weldline-detector installed."
 echo "Edit config: /etc/cocelo/weldline-detector/yolo_weldline_3d.yaml"
-echo "Edit scenario: /etc/cocelo/weldline-detector/scenario.yaml"
-echo "Pick RealSense USB port: weldline-detector-visualize --no-detect"
 echo "Run: weldline-detector"
-echo "Run with debug image viewer: weldline-detector --vis"
 echo "Check: weldline-detector-doctor"
 echo
 EOF
@@ -444,12 +466,21 @@ fi
 find "${STAGE_ROOT}" -type d -exec chmod 0755 {} +
 find "${STAGE_ROOT}/opt/cocelo/weldline-detector" -type f -name '*.sh' -exec chmod 0755 {} +
 find "${STAGE_ROOT}/opt/cocelo/weldline-detector/install" -type f \
-  -path '*/lib/weldline_reflectivity_detector/*' \
+  -path '*/lib/weldline_goal_publisher/*' \
   -exec chmod 0755 {} +
 
 mkdir -p "${OUTPUT_DIR}"
 DEB_PATH="${OUTPUT_DIR}/${PACKAGE_NAME}_${PACKAGE_VERSION}_${ARCH}.deb"
-dpkg-deb --build --root-owner-group "${STAGE_ROOT}" "${DEB_PATH}"
+DEB_TEMP="${DEB_PATH}.tmp.$$"
+rm -f "${DEB_TEMP}"
+dpkg-deb --build --root-owner-group -Zzstd -z3 "${STAGE_ROOT}" "${DEB_TEMP}"
+if ! ar t "${DEB_TEMP}" | grep -q '^data\.tar'; then
+  echo "error: generated package is missing its data archive" >&2
+  rm -f "${DEB_TEMP}"
+  exit 1
+fi
+dpkg-deb --info "${DEB_TEMP}" >/dev/null
+mv -f "${DEB_TEMP}" "${DEB_PATH}"
 
 {
   echo "package=${PACKAGE_NAME}"
@@ -459,7 +490,7 @@ dpkg-deb --build --root-owner-group "${STAGE_ROOT}" "${DEB_PATH}"
   echo "ubuntu_version=${UBUNTU_VERSION_ID}"
   echo "install_root=/opt/cocelo/weldline-detector/install"
   echo "config=/etc/cocelo/weldline-detector/yolo_weldline_3d.yaml"
-  echo "scenario=/etc/cocelo/weldline-detector/scenario.yaml"
+  echo "python_dependencies_bundled=${BUNDLE_PYTHON}"
 } > "${DEB_PATH%.deb}.build-info"
 
 echo
@@ -472,16 +503,9 @@ Install on target ${ARCH} system:
 
 Runtime config:
   sudoedit /etc/cocelo/weldline-detector/yolo_weldline_3d.yaml
-  sudoedit /etc/cocelo/weldline-detector/scenario.yaml
-
-Pick the RealSense USB port before running detection:
-  weldline-detector-visualize --no-detect
 
 Run detection:
   weldline-detector
-
-Run detection with annotated image + 3D XYZ viewer:
-  weldline-detector --vis
 
 Check installation / topics / RealSense visibility:
   weldline-detector-doctor
@@ -489,11 +513,10 @@ Check installation / topics / RealSense visibility:
 Packaged runtime:
   install tree: /opt/cocelo/weldline-detector/install
   config:       /etc/cocelo/weldline-detector/yolo_weldline_3d.yaml
-  scenario:     /etc/cocelo/weldline-detector/scenario.yaml
   docs:         /usr/share/doc/${PACKAGE_NAME}/
 
 Runtime assumption:
   ROS 2 ${ROS_DISTRO_NAME} is pre-installed at /opt/ros/${ROS_DISTRO_NAME}.
-  The package depends on ros-${ROS_DISTRO_NAME}-realsense2-camera and ros-${ROS_DISTRO_NAME}-ros2launch.
-  For the USB visualizer, pyrealsense2 must be available on the target Python.
+  Required ROS packages are declared as apt dependencies.
+  Python packages from requirements.txt are bundled unless --no-bundle-python is used.
 EOF

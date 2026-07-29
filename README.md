@@ -1,258 +1,68 @@
-# Scenario Commander + Weldline 3D Localization (ROS 2 / Python)
+# Weldline 3D Goal Publisher
 
-This package now contains the scenario commander's wall-alignment foundation in
-addition to the RGB-D detector. `scenario_commander_node` consumes the refined
-POINT_LIO global map, estimates nearby walls in the robot-link frame, and
-continuously publishes the signed link-to-wall angular error required for precise
-parallel alignment.
+ROS 2 Python package for one job: start an Intel RealSense RGB-D camera, run the
+weld-line YOLO model on color frames, project the 2D detection into 3D with the
+aligned depth image, transform it with TF2, and publish a Nav2-compatible
+`geometry_msgs/PoseStamped` goal.
 
-The detector and commander are Python ROS 2 nodes. The detector uses Python ONNX
-Runtime for inference and OpenCV for image processing. The integrated bringup
-launches RealSense, the detector, and the commander.
+Downstream navigation code should subscribe to `/weldline/goal_pose` and convert
+that single weld-line goal into whatever waypoint format it needs.
 
-## File-defined mission state machine
+## Runtime Interface
 
-[config/scenario.yaml](config/scenario.yaml) is a version-2 mission file. It
-contains the named goals and the exact 16-state weld-line sequence requested for
-this robot: detect, move to weld line, left 90°, destination 1, align, sit,
-destination 2, align, destination 3, 180°, align, return via destinations 2 and
-1 with alignment after each, then return to the weld line. The three fixed
-destination coordinates are placeholders; survey and replace them before using a
-real robot.
-
-`move` compares the current `map -> base_link` SLAM/TF pose with the named goal.
-While outside `position_tolerance_m`, it converts the map-frame error into body
-frame `cmd vx vy wz` with `wz=0`. `turn` compares the current SLAM yaw with the
-relative target yaw (this deliberately distinguishes 180°), then verifies the
-configured front-wall angle. `align_wall` uses only the front-wall angle and
-finishes when its absolute value is below `angle_tolerance_deg`. Missing pose,
-goal, or required wall input stops motion.
-
-| Interface | Meaning |
-| --- | --- |
-| `/goal_pose` (`geometry_msgs/PoseStamped`) | Weld-line 3D goal, locked after stable samples |
-| TF `map -> base_link` (or simulator `/odom_gt`) | Current planar pose for move/turn checks |
-| `/fsm_cmd` (`std_msgs/String`) | `cmd vx vy wz`, plus `SIT` and `RL` state commands |
-| `/commander/scenario/status` (`std_msgs/String`) | Current state, reason, and emitted command |
-| `/commander/mission/resume` (`std_msgs/String`) | Send `resume` after the external SIT state is confirmed |
-
-At `SIT` the commander sends `SIT` once, stops, and waits. It does not assume
-which state machine owns the transition. After external confirmation, resume the
-mission explicitly; it sends `RL` once and moves to destination 2:
-
-```bash
-ros2 topic pub --once /commander/mission/resume std_msgs/msg/String "{data: resume}"
-ros2 topic echo /commander/scenario/status
-```
-
-Override the mission file at launch with
-`WELDLINE_SCENARIO=/path/to/scenario.yaml ./launch.sh`.
-
-## Commander wall-alignment contract
-
-The commander subscribes directly to `/point_lio/global_map_refined` as
-`sensor_msgs/PointCloud2`. Its subscription is `RELIABLE + TRANSIENT_LOCAL`, matching
-POINT_LIO's refined-map publisher so a commander started after map creation still
-receives the cached map. The topic and all fitting parameters are editable under
-`scenario_commander_node.ros__parameters` in
-[config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml).
-
-| Interface | Type | Default | Meaning |
+| Direction | Topic | Type | Purpose |
 | --- | --- | --- | --- |
-| Refined map input | `sensor_msgs/PointCloud2` | `/point_lio/global_map_refined` | Cached global XYZ map |
-| Angle output | `std_msgs/Float64` | `/commander/wall_alignment/angle_deg` | Signed link-to-wall tangent error in degrees |
-| Distance output | `std_msgs/Float64` | `/commander/wall_alignment/distance_m` | Distance from the robot origin to the selected front wall in metres |
-| Valid output | `std_msgs/Bool` | `/commander/wall_alignment/valid` | Whether the current estimate passed all checks |
-| Metrics output | `geometry_msgs/Vector3Stamped` | `/commander/wall_alignment/metrics` | `x=angle_deg`, `y=distance_m`, `z=fit_rmse_m` |
-| Debug markers | `visualization_msgs/MarkerArray` | `/commander/wall_alignment/markers` | Selected wall, nearest point, and fit values |
+| input | `/camera/camera/color/image_raw` | `sensor_msgs/Image` | YOLO 2D weld-line detection |
+| input | `/camera/camera/aligned_depth_to_color/image_raw` | `sensor_msgs/Image` | depth for 2D-to-3D projection |
+| input | `/camera/camera/color/camera_info` | `sensor_msgs/CameraInfo` | camera intrinsics |
+| output | `/weldline/goal_pose` | `geometry_msgs/PoseStamped` | Nav2-style weld-line goal |
 
-The angle uses the configured `reference_link` (default `base_link`). It is the
-signed shortest rotation from link +X to the selected wall tangent, normalized to
-`[-90°, 90°)`: parallel is exactly `0°`, counter-clockwise correction is positive,
-and clockwise correction is negative. If no valid wall is available, `valid=false`
-and `angle_deg=NaN` are published.
+The output pose is transformed into `output_frame` (`map` by default). Set
+`nav2_planar_goal: true` to publish `z = 0.0`, which is the default.
 
-Nearby map points are cropped using the latest map-to-link TF, grouped into XY
-voxels, and required to show configurable vertical extent. This suppresses floor
-and ceiling returns. Multiple wall hypotheses are extracted with RANSAC and
-refined over all inliers using total least squares (PCA); length, inlier count, and
-fit RMSE gates reject clutter. `wall_sector` is configured as `front`, so only
-the wall in the robot +X direction is used for alignment. The default `tracked` selection initially
-ranks candidates by inlier count times observed length, then maintains angular
-continuity with that wall. `wall_tracking_max_angle_deg` limits association jumps.
-Use `strongest` for stateless selection or `nearest` only when proximity is the
-intended policy.
-
-Run only the commander when the camera detector is not needed:
+## Build
 
 ```bash
-source install/setup.bash
-ros2 launch weldline_reflectivity_detector scenario_commander.launch.xml
-ros2 topic echo /commander/wall_alignment/angle_deg
-```
-
-The commander-only launch still waits for the detector waypoint and publishes
-zero velocity until a fresh, stable `/goal_pose` is received.
-
-## HD-sim RL waypoint control
-
-`HD-sim`'s RL worker accepts `cmd vx vy wz` on `/fsm_cmd`; it forwards the
-three values to its velocity-command observation. Start the simulator from the
-`HD-sim` GUI, then in another terminal source the same ROS distribution and
-domain and run:
-
-```bash
-source /opt/ros/foxy/setup.bash
-source /home/sanghyunryoo/Documents/pr/HD-sim/ros2_ws/install/setup.bash
-source ~/.cache/cocelo/weldline-reflectivity-detector/install/setup.bash
-export ROS_DOMAIN_ID=<HD-sim GUI domain>
-ros2 launch weldline_reflectivity_detector scenario_commander_sim.launch.xml
-```
-
-The simulator launch publishes `RL` on `/fsm_cmd` for the first two seconds to
-activate the OZZ control manager, then executes the file-defined mission. It
-uses `/odom_gt` as the pose source and derives the front-wall angle from the
-signed difference between robot yaw and `wall_heading_deg` (default `0`, a wall
-parallel to world X). Set `wall_heading_deg` to the actual wall tangent if the
-simulated wall is not parallel to world X. The detector goal is replaced by the
-initial simulator pose when `simulator_skip_detector_waypoint` is enabled.
-
-## Runtime contract
-
-The node uses synchronized RGB, aligned depth, and camera intrinsics as an input bundle. A bounded latest-frame buffer is processed by a 30 Hz timer, preventing a slow inference cycle from accumulating camera latency.
-
-| Interface | Type | Default | Purpose |
-| --- | --- | --- | --- |
-| Input RGB | `sensor_msgs/Image` | `/camera/camera/color/image_raw` | YOLO inference |
-| Input depth | `sensor_msgs/Image` | `/camera/camera/aligned_depth_to_color/image_raw` | 3D projection (`16UC1` mm or `32FC1` m) |
-| Input intrinsics | `sensor_msgs/CameraInfo` | `/camera/camera/color/camera_info` | Pixel-to-camera projection |
-| Nav2 goal | `geometry_msgs/PoseStamped` | `/goal_pose` | Center pose, yaw aligned to the detected weld line |
-| Debug point | `geometry_msgs/PointStamped` | `/weldline_yolo/debug/center_point` | Exact 3D center coordinate |
-| Debug markers | `visualization_msgs/MarkerArray` | `/weldline_yolo/debug/markers` | Center sphere and 3D line |
-| Debug image | `sensor_msgs/Image` | `/weldline_yolo/debug/annotated_image` | Bounding box, line, and transformed coordinate |
-
-Coordinates are transformed through TF2 into `output_frame` (default `map`) before publication. A missing transform causes that frame to be discarded, never published with a false frame ID. Set `nav2_planar_goal: true` when Nav2 must receive `z = 0`.
-
-## Build and run
-
-```bash
-source /opt/ros/<your_ros_distro>/setup.bash  # optional if exactly one ROS 2 distro is installed
+source /opt/ros/<ros_distro>/setup.bash
 ./build.sh
-./launch.sh  # RealSense + detector + scenario commander
-./launch.sh --vis
 ```
 
-Like `cocelo-hd-autonomy-light`, this repository is managed as a standalone
-package. `build.sh` keeps generated data outside the repository by default:
+`build.sh` writes colcon artifacts outside the repository by default:
 
 ```text
-~/.cache/cocelo/weldline-reflectivity-detector/
-├── build/
-├── install/
-└── log/
+~/.cache/cocelo/weldline-goal-publisher/
 ```
 
-Set `COCELO_ARTIFACT_ROOT` to use another external artifact directory.
-`COCELO_BUILD_BASE`, `COCELO_INSTALL_BASE`, and `COCELO_LOG_BASE` remain
-available for individual overrides.
+## Run
 
-Before the first launch, set a unique DDS domain and the physical RealSense USB topology in [config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml). `usb_port_id` is deliberately required when the integrated driver starts, preventing an arbitrary camera from being selected on multi-camera systems.
-
-```yaml
-ros_domain_id: 20
-usb_port_id: "2-1.3"
-```
-
-Inspect USB topology with the visualizer below, then use the `usb_port_id` overlaid on the camera image you want the detector to own. Environment variables override the deployment file: `ROS_DOMAIN_ID=20 USB_PORT_ID=2-1.3 ./launch.sh`.
-
-The scripts use the sourced `ROS_DISTRO`; if none is sourced, they automatically select the sole distribution under `/opt/ros`. When several distributions are installed, source the intended one (or set `ROS_DISTRO`) to avoid an ambiguous build. Common overrides:
+By default, `launch.sh` auto-selects the only connected Intel RealSense device.
+If multiple cameras are connected, set the intended USB topology in
+[config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml) or override it with
+`USB_PORT_ID`.
 
 ```bash
-WEIGHTS=/opt/models/weldline.onnx ./launch.sh output_frame:=base_link processing_rate_hz:=30.0
+./launch.sh
+USB_PORT_ID=2-1.3 ./launch.sh
 ```
 
-An example COCO person detector is included as `weights/person_yolov5n.onnx`. It uses the same `1x3x640x640` RGB input layout; run it with class filtering enabled:
+Common overrides:
 
 ```bash
-WEIGHTS=$PWD/weights/person_yolov5n.onnx ./launch.sh target_class_id:=0
+WEIGHTS=$PWD/weights/best.onnx ./launch.sh output_frame:=map goal_topic:=/weldline/goal_pose
+./launch.sh start_realsense:=false
 ```
 
-Install Python runtime dependencies once before launching the detector:
+`start_realsense:=false` is useful when another bringup already owns the camera.
+
+## Verify
+
+```bash
+source ~/.cache/cocelo/weldline-goal-publisher/install/setup.bash
+ros2 topic echo /weldline/goal_pose
+```
+
+Python runtime dependencies:
 
 ```bash
 python3 -m pip install --user -r requirements.txt
 ```
-
-The model is loaded by Python ONNX Runtime when the detector node starts.
-
-`launch.sh` starts `realsense2_camera/rs_launch.py`, `yolo_weldline_3d_node`,
-and `scenario_commander_node` together. The default `camera_name:=camera`
-produces the input topics configured in the YAML file. Select a physical camera
-explicitly when several are connected:
-
-```bash
-./launch.sh camera_serial_no:=123456789012
-```
-
-When RealSense is managed externally, skip only the integrated camera driver;
-the detector and commander still start:
-
-```bash
-./launch.sh start_realsense:=false
-```
-
-The commander is enabled by default. Disable only it when troubleshooting the
-detector:
-
-```bash
-./launch.sh start_commander:=false
-```
-
-Use `--vis` to show `/weldline_yolo/debug/annotated_image` in an OpenCV window while the detector is running. The viewer also subscribes to `/weldline_yolo/debug/center_point` and overlays the latest 3D coordinate at the top of the image. Override viewer topics with `WELDLINE_VIS_IMAGE_TOPIC` and `WELDLINE_VIS_POINT_TOPIC` when needed.
-
-## RealSense diagnostics and visualization
-
-The Python visualizer is separate from the ROS 2 detector and intentionally has no ROS 2 dependency. Run it before `./launch.sh` when you need to decide which physical RealSense should be assigned to `usb_port_id` in `yolo_weldline_3d.yaml`.
-
-It uses `pyrealsense2` to discover and open every connected camera directly, logs each serial number and USB topology, overlays the same identifiers on each video tile, and can draw ONNX Runtime detections using `weights/person_yolov5n.onnx`. OpenCV is used only for image display and drawing, not ONNX inference. Press `q`, `Esc`, or `Ctrl+C` to release every RealSense pipeline.
-
-```bash
-sudo apt install python3-numpy python3-opencv
-python3 -m pip install --user onnxruntime
-python3 scripts/realsense_visualize.py
-python3 scripts/realsense_visualize.py --list-only
-python3 scripts/realsense_visualize.py --detect-fps 30 --target-class-id 0
-python3 scripts/realsense_visualize.py --no-detect
-```
-
-The default visualizer profile is `640,480,30`; lower it with `--color-profile 424,240,15` on constrained USB buses. The detector overlay defaults to the COCO person class (`target_class_id=0`). If Python ONNX Runtime is not installed, use `--no-detect` for USB/image-only mode.
-
-ROS 2 parameters are in [config/yolo_weldline_3d.yaml](config/yolo_weldline_3d.yaml). The launch file is XML-only; application logic resides in [yolo_node.py](weldline_reflectivity_detector/yolo_node.py).
-
-## Debian packages: AMD and ARM
-
-Run the package build on the target architecture:
-
-```bash
-./scripts/package_deb.sh
-```
-
-The script reads both the ROS distribution and Debian architecture from the current machine, accepts `amd64` or `arm64`, builds with `colcon`, stages the resulting ROS package under `/opt/cocelo/weldline-detector/install`, and creates the `.deb` with `dpkg-deb`. The filename explicitly identifies its compatibility target, for example `cocelo-weldline-detector_1.0.0-1+humble22.04_amd64.deb` or `cocelo-weldline-detector_1.0.0-1+jazzy24.04_arm64.deb`; a paired `.build-info` file records the same values.
-
-This package path does not require `bloom`. The package assumes ROS 2 is already installed at `/opt/ros/${ROS_DISTRO}`, bundles the detector-specific runtime tree, and declares the official `ros-${ROS_DISTRO}-realsense2-camera` driver dependency. Install the Python ONNX Runtime dependency on the target before launching.
-
-```bash
-sudo apt install ./dist/cocelo-weldline-detector_<version>_<arch>.deb
-weldline-detector-visualize --no-detect
-sudoedit /etc/cocelo/weldline-detector/yolo_weldline_3d.yaml
-sudoedit /etc/cocelo/weldline-detector/scenario.yaml
-weldline-detector --vis
-weldline-detector-doctor
-```
-
-## Deployment notes
-
-- Use a valid ONNX model supported by Python ONNX Runtime on the target. A corrupt or unsupported model is rejected at node startup with a fatal diagnostic.
-- Keep the model and ROS distribution identical across AMD/ARM release builds for reproducible detector behavior.
-- Connect the sensor optical frame to `map` (or configure `output_frame` to a valid TF frame) before enabling Nav2 navigation.
-# cocelo-hd-detection

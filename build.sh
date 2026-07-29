@@ -10,11 +10,15 @@ source_ros_environment
 resolve_project_paths "$project_dir"
 
 mkdir -p "$colcon_build_base" "$colcon_install_base" "$colcon_log_base"
-printf 'Building weldline_reflectivity_detector\n  source:  %s\n  build:   %s\n  install: %s\n  log:     %s\n' \
+printf 'Building weldline_goal_publisher\n  source:  %s\n  build:   %s\n  install: %s\n  log:     %s\n' \
   "$project_dir" "$colcon_build_base" "$colcon_install_base" "$colcon_log_base"
+
+rm -rf \
+  "$colcon_build_base/weldline_goal_publisher" \
+  "$colcon_install_base/weldline_goal_publisher"
 
 colcon --log-base "$colcon_log_base" build \
   --base-paths "$project_dir" \
   --build-base "$colcon_build_base" \
   --install-base "$colcon_install_base" \
-  --packages-select weldline_reflectivity_detector
+  --packages-select weldline_goal_publisher
