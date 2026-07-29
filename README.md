@@ -63,10 +63,11 @@ weldline-detector --vis
 ```
 
 When enabled, annotated color frames are published on `/weldline/debug_image`.
-The debug image shows color and depth side-by-side. Detected frames include the
-weld-line bounding box, line, center point, confidence, and transformed 3D center
+An OpenCV window named `weldline-detector` also opens automatically. The debug
+image shows color and depth side-by-side. Detected frames include the weld-line
+bounding box, line, center point, confidence, and transformed 3D center
 coordinates on both panels. Frames without a detection are published without an
-overlay. View the topic with:
+overlay. You can also view the topic with:
 
 ```bash
 ros2 run rqt_image_view rqt_image_view /weldline/debug_image

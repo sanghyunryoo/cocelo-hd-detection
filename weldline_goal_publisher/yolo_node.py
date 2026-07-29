@@ -105,6 +105,8 @@ class WeldlineGoalNode(Node):
         self.allow_latest_tf = bool(self.declare_parameter("allow_latest_tf_fallback", True).value)
         self.visualize = bool(self.declare_parameter("visualize", False).value)
         self.debug_image_topic = str(self.declare_parameter("debug_image_topic", "/weldline/debug_image").value)
+        self.visualizer_window_name = str(self.declare_parameter("visualizer_window_name", "weldline-detector").value)
+        self.visualizer_window_available = self.visualize
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -200,9 +202,29 @@ class WeldlineGoalNode(Node):
             return
 
         debug_image = render_debug_image(image, depth, detection, center_3d)
+        self.show_debug_window(debug_image)
         debug_msg = self.bridge.cv2_to_imgmsg(debug_image, encoding="bgr8")
         debug_msg.header = header
         self.debug_image_pub.publish(debug_msg)
+
+    def show_debug_window(self, debug_image: np.ndarray) -> None:
+        if not self.visualizer_window_available:
+            return
+
+        try:
+            cv2.imshow(self.visualizer_window_name, debug_image)
+            cv2.waitKey(1)
+        except cv2.error as error:
+            self.visualizer_window_available = False
+            self.get_logger().warn(f"Failed to open visualization window: {error}", throttle_duration_sec=5.0)
+
+    def destroy_visualizer_window(self) -> None:
+        if not self.visualize:
+            return
+        try:
+            cv2.destroyWindow(self.visualizer_window_name)
+        except cv2.error:
+            pass
 
     def detect_weldline(self, image: np.ndarray) -> Detection2D | None:
         network_input, scale, pad_x, pad_y = letterbox(image)
@@ -448,6 +470,7 @@ def main() -> None:
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        node.destroy_visualizer_window()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
