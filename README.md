@@ -54,6 +54,31 @@ WEIGHTS=$PWD/weights/best.onnx ./launch.sh output_frame:=map goal_topic:=/weldli
 
 `start_realsense:=false` is useful when another bringup already owns the camera.
 
+Enable annotated visualization with:
+
+```bash
+weldline-detector --vis
+# or from the source tree:
+./launch.sh --vis
+```
+
+When enabled, annotated color frames are published on `/weldline/debug_image`.
+The debug image shows color and depth side-by-side. Detected frames include the
+weld-line bounding box, line, center point, confidence, and transformed 3D center
+coordinates on both panels. Frames without a detection are published without an
+overlay. View the topic with:
+
+```bash
+ros2 run rqt_image_view rqt_image_view /weldline/debug_image
+```
+
+If the RealSense driver reports a depth stream start failure, retry with lower
+USB bandwidth:
+
+```bash
+weldline-detector --vis --low-bandwidth
+```
+
 ## Verify
 
 ```bash

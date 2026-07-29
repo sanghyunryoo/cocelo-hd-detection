@@ -25,3 +25,7 @@ weldline_goal_node:
     # here and convert this weldline goal into waypoint arrays.
     nav2_planar_goal: true
     goal_topic: "/weldline/goal_pose"
+
+    # Enable with weldline-detector --vis or ./launch.sh --vis.
+    visualize: false
+    debug_image_topic: "/weldline/debug_image"

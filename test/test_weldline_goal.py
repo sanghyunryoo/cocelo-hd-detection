@@ -4,7 +4,7 @@ import numpy as np
 from geometry_msgs.msg import PointStamped
 from sensor_msgs.msg import CameraInfo
 
-from weldline_goal_publisher.yolo_node import pose_from_points, project_pixel
+from weldline_goal_publisher.yolo_node import Detection2D, pose_from_points, project_pixel, render_debug_image
 
 
 def camera_info() -> CameraInfo:
@@ -55,3 +55,33 @@ def test_pose_from_points_publishes_planar_nav2_goal_with_line_yaw():
     assert pose.pose.position.z == 0.0
     assert abs(pose.pose.orientation.z - sqrt(0.5)) < 1e-12
     assert abs(pose.pose.orientation.w - sqrt(0.5)) < 1e-12
+
+
+def test_render_debug_image_returns_plain_frame_without_detection():
+    image = np.full((40, 60, 3), 20, dtype=np.uint8)
+
+    rendered = render_debug_image(image, None, None, None)
+
+    assert np.array_equal(rendered[:, : image.shape[1]], image)
+    assert rendered.shape == (image.shape[0], image.shape[1] * 2 + 4, 3)
+    assert rendered is not image
+
+
+def test_render_debug_image_draws_detection_overlay_and_coordinates():
+    image = np.zeros((80, 120, 3), dtype=np.uint8)
+    depth = np.linspace(0.5, 2.0, 80 * 120, dtype=np.float32).reshape(80, 120)
+    detection = Detection2D(
+        box=(10, 20, 50, 30),
+        center=(35, 35),
+        line_start=(12, 35),
+        line_end=(58, 35),
+        confidence=0.91,
+    )
+    center = stamped_point(1.2, -0.3, 2.4)
+
+    rendered = render_debug_image(image, depth, detection, center)
+
+    assert rendered.shape == (image.shape[0], image.shape[1] * 2 + 4, 3)
+    assert np.count_nonzero(rendered) > 0
+    assert rendered[20, 10].any()
+    assert rendered[20, image.shape[1] + 4 + 10].any()

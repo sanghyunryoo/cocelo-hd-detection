@@ -161,9 +161,29 @@ domain_id="${ROS_DOMAIN_ID:-$configured_domain_id}"
 export ROS_DOMAIN_ID="$domain_id"
 usb_port_id="${USB_PORT_ID:-$configured_usb_port_id}"
 start_realsense=true
+visualize=false
 ros_launch_args=()
 for argument in "$@"; do
   case "$argument" in
+    --vis)
+      visualize=true
+      ros_launch_args+=("visualize:=true")
+      ;;
+    --no-vis)
+      visualize=false
+      ros_launch_args+=("visualize:=false")
+      ;;
+    --low-bandwidth)
+      ros_launch_args+=("color_profile:=640,480,15" "depth_profile:=640,480,15")
+      ;;
+    visualize:=true)
+      visualize=true
+      ros_launch_args+=("$argument")
+      ;;
+    visualize:=false)
+      visualize=false
+      ros_launch_args+=("$argument")
+      ;;
     start_realsense:=true)
       start_realsense=true
       ;;
@@ -229,6 +249,9 @@ if [[ "$source_tree_invocation" == true ]]; then
 fi
 weights="${WEIGHTS:-$weights_default}"
 echo "Starting weldline bringup: RealSense=${start_realsense}, goal_topic=/weldline/goal_pose" >&2
+if [[ "$visualize" == true ]]; then
+  echo "Visualization enabled: view annotated frames on /weldline/debug_image" >&2
+fi
 launch_command=(
   ros2 launch weldline_goal_publisher yolo_weldline_3d.launch.xml
   params_file:="$parameter_config"

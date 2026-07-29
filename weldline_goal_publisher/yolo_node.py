@@ -31,6 +31,12 @@ class Detection2D:
     confidence: float
 
 
+@dataclass(frozen=True)
+class ProjectedDetection:
+    pose: PoseStamped
+    center: PointStamped
+
+
 def depth_to_meters(depth_msg: Image, bridge: CvBridge) -> np.ndarray | None:
     depth = bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough").astype(np.float32)
     if depth_msg.encoding in ("16UC1", "mono16"):
@@ -97,6 +103,8 @@ class WeldlineGoalNode(Node):
         self.use_line_detection = bool(self.declare_parameter("use_line_detection", True).value)
         self.planar_goal = bool(self.declare_parameter("nav2_planar_goal", True).value)
         self.allow_latest_tf = bool(self.declare_parameter("allow_latest_tf_fallback", True).value)
+        self.visualize = bool(self.declare_parameter("visualize", False).value)
+        self.debug_image_topic = str(self.declare_parameter("debug_image_topic", "/weldline/debug_image").value)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -106,6 +114,7 @@ class WeldlineGoalNode(Node):
             str(self.declare_parameter("goal_topic", "/weldline/goal_pose").value),
             10,
         )
+        self.debug_image_pub = self.create_publisher(Image, self.debug_image_topic, 10) if self.visualize else None
 
         color_sub = message_filters.Subscriber(
             self, Image, str(self.declare_parameter("color_topic", "/camera/camera/color/image_raw").value)
@@ -145,26 +154,55 @@ class WeldlineGoalNode(Node):
             depth = depth_to_meters(depth_msg, self.bridge)
             if depth is None:
                 self.get_logger().warn(f"Unsupported depth encoding: {depth_msg.encoding}", throttle_duration_sec=2.0)
+                self.publish_debug_image(image, None, color_msg.header, None, None)
                 return
 
             detection = self.detect_weldline(image)
             if detection is None:
+                self.publish_debug_image(image, depth, color_msg.header, None, None)
                 return
 
-            goal = self.goal_from_detection(detection, depth, depth_msg.header, camera_info)
-            if goal is not None:
-                self.goal_pub.publish(goal)
+            projection = self.project_detection(detection, depth, depth_msg.header, camera_info)
+            if projection is not None:
+                self.goal_pub.publish(projection.pose)
+            self.publish_debug_image(image, depth, color_msg.header, detection, None if projection is None else projection.center)
         except Exception as error:  # Keep the camera pipeline alive after a bad frame.
             self.get_logger().error(f"Failed to publish weldline goal: {error}")
 
     def goal_from_detection(self, detection: Detection2D, depth: np.ndarray, header, info: CameraInfo) -> PoseStamped | None:
+        projection = self.project_detection(detection, depth, header, info)
+        return None if projection is None else projection.pose
+
+    def project_detection(
+        self,
+        detection: Detection2D,
+        depth: np.ndarray,
+        header,
+        info: CameraInfo,
+    ) -> ProjectedDetection | None:
         center = self.transform_point(project_pixel(detection.center, depth, info, self.depth_window), header)
         if center is None:
             return None
 
         start = self.transform_point(project_pixel(detection.line_start, depth, info, self.depth_window), header)
         end = self.transform_point(project_pixel(detection.line_end, depth, info, self.depth_window), header)
-        return pose_from_points(center, start, end, self.planar_goal)
+        return ProjectedDetection(pose_from_points(center, start, end, self.planar_goal), center)
+
+    def publish_debug_image(
+        self,
+        image: np.ndarray,
+        depth: np.ndarray | None,
+        header,
+        detection: Detection2D | None,
+        center_3d: PointStamped | None,
+    ) -> None:
+        if self.debug_image_pub is None:
+            return
+
+        debug_image = render_debug_image(image, depth, detection, center_3d)
+        debug_msg = self.bridge.cv2_to_imgmsg(debug_image, encoding="bgr8")
+        debug_msg.header = header
+        self.debug_image_pub.publish(debug_msg)
 
     def detect_weldline(self, image: np.ndarray) -> Detection2D | None:
         network_input, scale, pad_x, pad_y = letterbox(image)
@@ -317,6 +355,89 @@ def detect_line(
     end = (x + int(line[2]), y + int(line[3]))
     center = ((start[0] + end[0]) // 2, (start[1] + end[1]) // 2)
     return start, end, center
+
+
+def render_debug_image(
+    image: np.ndarray,
+    depth: np.ndarray | None,
+    detection: Detection2D | None,
+    center_3d: PointStamped | None,
+) -> np.ndarray:
+    color_panel = image.copy()
+    depth_panel = depth_to_colormap(depth, image.shape[:2])
+    if detection is None:
+        return stack_debug_panels(color_panel, depth_panel)
+
+    label = f"conf={detection.confidence:.2f}"
+    if center_3d is not None:
+        point = center_3d.point
+        frame = center_3d.header.frame_id
+        label = f"{label} x={point.x:.2f} y={point.y:.2f} z={point.z:.2f} {frame}"
+
+    draw_detection_overlay(color_panel, detection, label)
+    draw_detection_overlay(depth_panel, detection, label)
+    return stack_debug_panels(color_panel, depth_panel)
+
+
+def depth_to_colormap(depth: np.ndarray | None, image_shape: tuple[int, int]) -> np.ndarray:
+    height, width = image_shape
+    if depth is None:
+        panel = np.zeros((height, width, 3), dtype=np.uint8)
+        cv2.putText(panel, "depth unavailable", (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 180), 2)
+        return panel
+
+    valid_depth = depth[np.isfinite(depth) & (depth > 0.05)]
+    if valid_depth.size == 0:
+        normalized = np.zeros(depth.shape, dtype=np.uint8)
+    else:
+        min_depth = float(np.percentile(valid_depth, 2))
+        max_depth = float(np.percentile(valid_depth, 98))
+        if max_depth <= min_depth:
+            max_depth = min_depth + 0.1
+        clipped = np.clip(depth, min_depth, max_depth)
+        clipped = np.where(np.isfinite(clipped) & (depth > 0.05), clipped, min_depth)
+        normalized = ((clipped - min_depth) * 255.0 / (max_depth - min_depth)).astype(np.uint8)
+        normalized[~np.isfinite(depth) | (depth <= 0.05)] = 0
+
+    panel = cv2.applyColorMap(normalized, cv2.COLORMAP_TURBO)
+    if panel.shape[:2] != (height, width):
+        panel = cv2.resize(panel, (width, height), interpolation=cv2.INTER_NEAREST)
+    return panel
+
+
+def stack_debug_panels(color_panel: np.ndarray, depth_panel: np.ndarray) -> np.ndarray:
+    if depth_panel.shape[:2] != color_panel.shape[:2]:
+        depth_panel = cv2.resize(depth_panel, (color_panel.shape[1], color_panel.shape[0]), interpolation=cv2.INTER_NEAREST)
+    separator = np.full((color_panel.shape[0], 4, 3), 32, dtype=np.uint8)
+    return np.hstack((color_panel, separator, depth_panel))
+
+
+def draw_detection_overlay(image: np.ndarray, detection: Detection2D, label: str) -> None:
+    x, y, width, height = detection.box
+    x2 = x + width
+    y2 = y + height
+    cv2.rectangle(image, (x, y), (x2, y2), (0, 220, 0), 2)
+    cv2.line(image, detection.line_start, detection.line_end, (255, 180, 0), 2)
+    cv2.circle(image, detection.center, 4, (0, 0, 255), -1)
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.5
+    thickness = 1
+    (text_width, text_height), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+    label_x = max(0, min(x, image.shape[1] - text_width - 8))
+    label_top = y - text_height - baseline - 8
+    if label_top < 0:
+        label_top = min(image.shape[0] - text_height - baseline - 8, y2 + 4)
+    label_top = max(0, label_top)
+    label_bottom = min(image.shape[0] - 1, label_top + text_height + baseline + 8)
+    cv2.rectangle(
+        image,
+        (label_x, label_top),
+        (min(image.shape[1] - 1, label_x + text_width + 8), label_bottom),
+        (0, 220, 0),
+        -1,
+    )
+    cv2.putText(image, label, (label_x + 4, label_bottom - baseline - 4), font, font_scale, (0, 0, 0), thickness)
 
 
 def main() -> None:
